@@ -69,7 +69,54 @@ FROM node:20-alpine AS runtime
 
 WORKDIR /app
 
-# Install runtime dependencies only (no npm needed at runtime)
+# Upgrade npm to latest version
+RUN npm install -g npm@latest
+
+# Install wrangler globally with security patches for its bundled dependencies
+# Wrangler bundles vulnerable versions of glob, cross-spawn, and brace-expansion
+# We patch these by installing fixed versions that npm will use to satisfy wrangler's deps
+RUN npm install -g wrangler@latest && \
+    # Patch wrangler's bundled vulnerable dependencies
+    cd /usr/local/lib/node_modules/wrangler && \
+    # Find and replace vulnerable glob versions
+    find . -type d -name "glob" -path "*/node_modules/*" | while read dir; do \
+        if [ -f "$dir/package.json" ]; then \
+            version=$(grep -o '"version": *"[^"]*"' "$dir/package.json" | head -1 | cut -d'"' -f4); \
+            case "$version" in \
+                10.4.*|10.3.*|10.2.*) \
+                    rm -rf "$dir"/* && \
+                    cd /tmp && npm pack glob@10.5.0 && tar -xzf glob-10.5.0.tgz && \
+                    cp -r package/* "$dir/" && rm -rf /tmp/glob-* /tmp/package ;; \
+            esac; \
+        fi; \
+    done && \
+    # Find and replace vulnerable cross-spawn versions
+    find . -type d -name "cross-spawn" -path "*/node_modules/*" | while read dir; do \
+        if [ -f "$dir/package.json" ]; then \
+            version=$(grep -o '"version": *"[^"]*"' "$dir/package.json" | head -1 | cut -d'"' -f4); \
+            case "$version" in \
+                7.0.[0-4]) \
+                    rm -rf "$dir"/* && \
+                    cd /tmp && npm pack cross-spawn@7.0.6 && tar -xzf cross-spawn-7.0.6.tgz && \
+                    cp -r package/* "$dir/" && rm -rf /tmp/cross-spawn-* /tmp/package ;; \
+            esac; \
+        fi; \
+    done && \
+    # Find and replace vulnerable brace-expansion versions
+    find . -type d -name "brace-expansion" -path "*/node_modules/*" | while read dir; do \
+        if [ -f "$dir/package.json" ]; then \
+            version=$(grep -o '"version": *"[^"]*"' "$dir/package.json" | head -1 | cut -d'"' -f4); \
+            case "$version" in \
+                2.0.0|2.0.1) \
+                    rm -rf "$dir"/* && \
+                    cd /tmp && npm pack brace-expansion@2.0.2 && tar -xzf brace-expansion-2.0.2.tgz && \
+                    cp -r package/* "$dir/" && rm -rf /tmp/brace-expansion-* /tmp/package ;; \
+            esac; \
+        fi; \
+    done && \
+    npm cache clean --force
+
+# Install runtime dependencies only
 # Security Notes:
 # - curl 8.14.1-r2 has CVE-2025-10966 (MEDIUM) with no fix available yet (Alpine base package)
 # - busybox 1.37.0-r19 has CVE-2025-46394 & CVE-2024-58251 (LOW) with no fixes available yet (Alpine base package)
@@ -110,5 +157,5 @@ HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
 
 # Default command: Run Wrangler in development mode
 # Override with specific commands for production deployment
-CMD ["npx", "wrangler", "dev", "--ip", "0.0.0.0", "--port", "8787"]
+CMD ["wrangler", "dev", "--ip", "0.0.0.0", "--port", "8787"]
 
