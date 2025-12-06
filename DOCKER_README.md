@@ -4,7 +4,7 @@ Last Updated November 27, 2025 - Production/Stable Version 1.0.0
 
 ## Tech Stack
 
-**Frontend**: React 19.2.0 | Vite 7.2.4 | TypeScript 5.9.3 | Tailwind CSS | shadcn/ui 
+**Frontend**: React 19.2.1 | TypeScript 5.9.3 | Vite 7.2.6 | Tailwind CSS | shadcn/ui 
 **Backend**: Cloudflare Workers + KV + D1 + R2 + Durable Objects + Zero Trust
 
 [![GitHub](https://img.shields.io/badge/GitHub-neverinfamous/kv--manager-blue?logo=github)](https://github.com/neverinfamous/kv-manager)
