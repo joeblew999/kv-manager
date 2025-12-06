@@ -4,7 +4,8 @@ Last Updated December 6, 2025 - Production/Stable Version 1.0.0
 
 ## Tech Stack
 
-**Frontend**: React 19.2.1 | TypeScript 5.9.3 | Vite 7.2.6 | Tailwind CSS | shadcn/ui 
+**Frontend**: React 19.2.1 | TypeScript 5.9.3 | Vite 7.2.6 | Tailwind CSS 3.4.18 | shadcn/ui
+
 **Backend**: Cloudflare Workers + KV + D1 + R2 + Durable Objects + Zero Trust
 
 [![GitHub](https://img.shields.io/badge/GitHub-neverinfamous/kv--manager-blue?logo=github)](https://github.com/neverinfamous/kv-manager)
@@ -18,7 +19,7 @@ Last Updated December 6, 2025 - Production/Stable Version 1.0.0
 
 A full-featured management platform for Cloudflare Workers KV, designed for engineering teams and large-scale workloads. Browse namespaces, run bulk operations, search across your entire KV footprint, manage metadata and tags, automate backups to R2, and secure everything with Cloudflare Access Zero Trust.
 
-**[Live Demo](https://kv.adamic.tech/)** • **[GitHub](https://github.com/neverinfamous/kv-manager)** • **[Wiki](https://github.com/neverinfamous/kv-manager/wiki)** • **[Changelog](https://github.com/neverinfamous/kv-manager/wiki/Changelog)** • **[Release Article](https://adamic.tech/articles/2025-11-05-kv-manager-v1-0-0)**
+**[Live Demo](https://kv.adamic.tech/)** • **[GitHub](https://github.com/neverinfamous/kv-manager)** • **[Wiki](https://github.com/neverinfamous/kv-manager/wiki)** • **[Changelog](https://github.com/neverinfamous/kv-manager/wiki/Changelog)** • **[Release Article](https://adamic.tech/articles/kv-manager)**
 
 ## ✨ Key Features
 
