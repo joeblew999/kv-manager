@@ -1,6 +1,6 @@
 # Cloudflare KV Manager
 
-Last Updated November 27, 2025 - Production/Stable Version 1.0.0 
+Last Updated December 6, 2025 - Production/Stable Version 1.0.0 
 
 ## Tech Stack
 
