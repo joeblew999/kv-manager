@@ -27,9 +27,9 @@
     "jose": "^6.1.2",
     "jszip": "^3.10.1",
     "lucide-react": "^0.555.0",
-    "react": "^19.2.0",
-    "react-day-picker": "^9.11.2",
-    "react-dom": "^19.2.0"
+    "react": "^19.2.1",
+    "react-day-picker": "^9.11.3",
+    "react-dom": "^19.2.1"
   },
   "devDependencies": {
     "@cloudflare/workers-types": "^4.20251128.0",
