@@ -36,6 +36,8 @@ const ERROR_CODE_PREFIXES: Record<string, string> = {
   import: 'IMP',
   jobs: 'JOB',
   job_audit: 'JOB',
+  metrics: 'MET',
+  migrations: 'MIG',
 }
 
 /**
@@ -44,7 +46,7 @@ const ERROR_CODE_PREFIXES: Record<string, string> = {
 function generateErrorCode(context: ErrorContext, level: ErrorSeverity): string {
   const prefix = ERROR_CODE_PREFIXES[context.module] ?? 'ERR'
   const operation = context.operation.toUpperCase().replace(/[^A-Z0-9]/g, '_')
-  
+
   // Use appropriate suffix based on severity level
   switch (level) {
     case 'error':
@@ -52,6 +54,8 @@ function generateErrorCode(context: ErrorContext, level: ErrorSeverity): string 
     case 'warning':
       return `${prefix}_${operation}_WARN`
     case 'info':
+      return `${prefix}_${operation}`
+    default:
       return `${prefix}_${operation}`
   }
 }
@@ -62,18 +66,22 @@ function generateErrorCode(context: ErrorContext, level: ErrorSeverity): string 
 function formatForConsole(error: StructuredError): string {
   const parts = [
     `[${error.level.toUpperCase()}]`,
-    `[${error.context.module}]`,
+    `[${error.module}]`,
     `[${error.code}]`,
     error.message,
   ]
-  
-  if (error.context.namespaceId) {
-    parts.push(`(ns: ${error.context.namespaceId})`)
+
+  if (error.context) {
+    const namespaceId = error.context['namespaceId']
+    if (namespaceId) {
+      parts.push(`(ns: ${namespaceId})`)
+    }
+    const keyName = error.context['keyName']
+    if (keyName) {
+      parts.push(`(key: ${keyName})`)
+    }
   }
-  if (error.context.keyName) {
-    parts.push(`(key: ${error.context.keyName})`)
-  }
-  
+
   return parts.join(' ')
 }
 
@@ -87,10 +95,11 @@ export function createStructuredError(
 ): StructuredError {
   const message = error instanceof Error ? error.message : error
   const stack = error instanceof Error ? error.stack : undefined
-  
+
   return {
     timestamp: nowISO(),
     level,
+    module: context.module,
     code: generateErrorCode(context, level),
     message,
     context,
@@ -113,30 +122,31 @@ export async function logError(
   } = {}
 ): Promise<StructuredError> {
   const structuredError = createStructuredError(error, context, 'error')
-  
+
   // Log to console with structured format
   console.error(formatForConsole(structuredError))
   if (structuredError.stack) {
     console.error('[Stack]', structuredError.stack)
   }
-  
+
   // Log metadata if present
-  if (context.metadata && Object.keys(context.metadata).length > 0) {
-    console.error('[Metadata]', JSON.stringify(context.metadata))
+  const metadata = context['metadata']
+  if (metadata && typeof metadata === 'object' && Object.keys(metadata).length > 0) {
+    console.error('[Metadata]', JSON.stringify(metadata))
   }
-  
+
   // Trigger webhook for job failures
   if (options.triggerWebhook !== false && options.jobId) {
     try {
       await triggerWebhooks(
         env,
-        'job_failed',
+        'job.failed',
         createJobFailedWebhookData(
           options.jobId,
           context.operation,
           structuredError.message,
-          context.namespaceId ?? null,
-          context.userId ?? null
+          (context['namespaceId'] as string | undefined) ?? null,
+          (context['userId'] as string | undefined) ?? null
         ),
         isLocalDev
       )
@@ -144,7 +154,7 @@ export async function logError(
       console.error('[ErrorLogger] Failed to trigger webhook:', webhookError)
     }
   }
-  
+
   return structuredError
 }
 
@@ -156,13 +166,14 @@ export function logWarning(
   context: ErrorContext
 ): StructuredError {
   const structuredError = createStructuredError(message, context, 'warning')
-  
+
   console.warn(formatForConsole(structuredError))
-  
-  if (context.metadata && Object.keys(context.metadata).length > 0) {
-    console.warn('[Metadata]', JSON.stringify(context.metadata))
+
+  const metadata = context['metadata']
+  if (metadata && typeof metadata === 'object' && Object.keys(metadata).length > 0) {
+    console.warn('[Metadata]', JSON.stringify(metadata))
   }
-  
+
   return structuredError
 }
 
@@ -174,9 +185,9 @@ export function logInfo(
   context: ErrorContext
 ): StructuredError {
   const structuredError = createStructuredError(message, context, 'info')
-  
+
   console.log(formatForConsole(structuredError))
-  
+
   return structuredError
 }
 
@@ -189,12 +200,12 @@ export function formatErrorForWebhook(error: StructuredError): Record<string, un
     level: error.level,
     code: error.code,
     message: error.message,
-    module: error.context.module,
-    operation: error.context.operation,
-    namespace_id: error.context.namespaceId,
-    key_name: error.context.keyName,
-    user_id: error.context.userId,
-    metadata: error.context.metadata,
+    module: error.context?.module ?? error.module,
+    operation: error.context?.operation ?? 'unknown',
+    namespace_id: error.context?.['namespaceId'],
+    key_name: error.context?.['keyName'],
+    user_id: error.context?.['userId'],
+    metadata: error.context?.['metadata'],
   }
 }
 
@@ -243,7 +254,7 @@ export async function withErrorLogging<T>(
     if (options.jobId !== undefined) {
       logOptions.jobId = options.jobId
     }
-    
+
     await logError(
       env,
       error instanceof Error ? error : String(error),
@@ -251,11 +262,11 @@ export async function withErrorLogging<T>(
       isLocalDev,
       logOptions
     )
-    
+
     if (options.rethrow !== false) {
       throw error
     }
-    
+
     return null
   }
 }

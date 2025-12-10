@@ -1,16 +1,22 @@
 import type { D1Database, KVNamespace, DurableObjectNamespace } from '@cloudflare/workers-types';
 import type { Env, KVNamespaceInfo, KVKeyInfo, KeyMetadata, AuditLogEntry, BulkJob, MockKVData, JobAuditEvent } from '../types';
+import { logInfo, logWarning, createErrorContext } from './error-logger';
 
 /**
  * Create a Cloudflare API request with authentication
  */
 export function createCfApiRequest(endpoint: string, env: Env, init?: RequestInit): Request {
   const url = `https://api.cloudflare.com/client/v4${endpoint}`;
-  
+
   const headers = new Headers(init?.headers || {});
   headers.set('Authorization', `Bearer ${env.API_KEY}`);
-  headers.set('Content-Type', 'application/json');
   
+  // Only set Content-Type if not using FormData (FormData sets its own Content-Type with boundary)
+  const isFormData = init?.body instanceof FormData;
+  if (!isFormData && !headers.has('Content-Type')) {
+    headers.set('Content-Type', 'application/json');
+  }
+
   return new Request(url, {
     ...init,
     headers
@@ -108,7 +114,7 @@ export async function auditLog(
   entry: Omit<AuditLogEntry, 'id' | 'timestamp'>
 ): Promise<void> {
   if (!db) {
-    console.log('[Audit] No D1 binding, skipping audit log');
+    logWarning('No D1 binding, skipping audit log', createErrorContext('audit', 'log_entry'));
     return;
   }
 
@@ -127,7 +133,10 @@ export async function auditLog(
       )
       .run();
   } catch (error) {
-    console.error('[Audit] Failed to log audit entry:', error);
+    // Note: No env/isLocalDev available in this context, log synchronously
+    logWarning('Failed to log audit entry', createErrorContext('audit', 'log_entry', {
+      metadata: { error: error instanceof Error ? error.message : String(error) }
+    }));
   }
 }
 
@@ -139,7 +148,7 @@ export async function logJobEvent(
   event: Omit<JobAuditEvent, 'id' | 'timestamp'>
 ): Promise<void> {
   if (!db) {
-    console.log('[JobAudit] No D1 binding, skipping event log');
+    logWarning('No D1 binding, skipping event log', createErrorContext('job_audit', 'log_event'));
     return;
   }
 
@@ -156,9 +165,13 @@ export async function logJobEvent(
         event.details || null
       )
       .run();
-    console.log(`[JobAudit] Logged ${event.event_type} event for job ${event.job_id}`);
+    logInfo(`Logged ${event.event_type} event for job`, createErrorContext('job_audit', 'log_event', {
+      metadata: { jobId: event.job_id, eventType: event.event_type }
+    }));
   } catch (error) {
-    console.error('[JobAudit] Failed to log job event:', error);
+    logWarning('Failed to log job event', createErrorContext('job_audit', 'log_event', {
+      metadata: { jobId: event.job_id, error: error instanceof Error ? error.message : String(error) }
+    }));
   }
 }
 
@@ -185,7 +198,7 @@ export async function getNamespaceTitle(
         .prepare('UPDATE namespaces SET last_accessed = CURRENT_TIMESTAMP WHERE namespace_id = ?')
         .bind(namespaceId)
         .run();
-      
+
       return existing.namespace_title;
     }
 
@@ -198,13 +211,16 @@ export async function getNamespaceTitle(
         )
         .bind(namespaceId, title)
         .run();
-      
+
       return title;
     }
 
     return null;
   } catch (error) {
-    console.error('[D1] Failed to get/create namespace:', error);
+    logWarning('Failed to get/create namespace', createErrorContext('namespaces', 'get_title', {
+      namespaceId,
+      metadata: { error: error instanceof Error ? error.message : String(error) }
+    }));
     return title || null;
   }
 }
@@ -226,7 +242,9 @@ export async function getNamespaceId(
 
     return result?.namespace_id || null;
   } catch (error) {
-    console.error('[D1] Failed to get namespace ID:', error);
+    logWarning('Failed to get namespace ID', createErrorContext('namespaces', 'get_id', {
+      metadata: { title, error: error instanceof Error ? error.message : String(error) }
+    }));
     return null;
   }
 }

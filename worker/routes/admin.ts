@@ -1,5 +1,6 @@
 import type { Env, APIResponse } from '../types';
 import { createCfApiRequest, getD1Binding } from '../utils/helpers';
+import { logInfo, logWarning, logError, createErrorContext } from '../utils/error-logger';
 
 /**
  * Admin utility routes for maintenance operations
@@ -20,7 +21,10 @@ export async function handleAdminRoutes(
     if (syncMatch && request.method === 'POST') {
       const namespaceId = syncMatch[1];
 
-      console.log('[Admin] Syncing keys for namespace:', namespaceId, 'requested by:', userEmail);
+      logInfo('Syncing keys for namespace', createErrorContext('admin', 'sync_keys', {
+        ...(namespaceId !== undefined && { namespaceId }),
+        userId: userEmail
+      }));
 
       if (isLocalDev || !db) {
         const response: APIResponse = {
@@ -43,14 +47,20 @@ export async function handleAdminRoutes(
 
       if (!cfResponse.ok) {
         const errorText = await cfResponse.text();
-        console.error('[Admin] Cloudflare API error:', errorText);
+        await logError(env, `Cloudflare API error: ${errorText}`, createErrorContext('admin', 'sync_keys', {
+          ...(namespaceId !== undefined && { namespaceId }),
+          metadata: { status: cfResponse.status }
+        }), isLocalDev);
         throw new Error(`Cloudflare API error: ${cfResponse.status} - ${errorText}`);
       }
 
       const data = await cfResponse.json() as { result: { name: string }[] };
       const keys = data.result || [];
 
-      console.log('[Admin] Found', keys.length, 'keys to sync');
+      logInfo(`Found ${keys.length} keys to sync`, createErrorContext('admin', 'sync_keys', {
+        ...(namespaceId !== undefined && { namespaceId }),
+        metadata: { keyCount: keys.length }
+      }));
 
       // Insert metadata entries for all keys (skip if already exists)
       let syncedCount = 0;
@@ -67,12 +77,19 @@ export async function handleAdminRoutes(
             .run();
           syncedCount++;
         } catch (err) {
-          console.error('[Admin] Failed to sync key:', key.name, err);
+          logWarning(`Failed to sync key: ${key.name}`, createErrorContext('admin', 'sync_keys', {
+            ...(namespaceId !== undefined && { namespaceId }),
+            keyName: key.name,
+            metadata: { error: err instanceof Error ? err.message : String(err) }
+          }));
           // Continue with other keys
         }
       }
 
-      console.log('[Admin] Successfully synced', syncedCount, 'of', keys.length, 'keys');
+      logInfo(`Successfully synced ${syncedCount} of ${keys.length} keys`, createErrorContext('admin', 'sync_keys', {
+        ...(namespaceId !== undefined && { namespaceId }),
+        metadata: { syncedCount, totalKeys: keys.length }
+      }));
 
       const response: APIResponse = {
         success: true,
@@ -94,7 +111,7 @@ export async function handleAdminRoutes(
       headers: { 'Content-Type': 'application/json', ...corsHeaders }
     });
   } catch (error) {
-    console.error('[Admin] Error:', error);
+    await logError(env, error instanceof Error ? error : String(error), createErrorContext('admin', 'handle_request'), isLocalDev);
     return new Response(
       JSON.stringify({ error: 'Internal Server Error' }),
       {

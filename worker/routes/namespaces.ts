@@ -1,5 +1,6 @@
 import type { Env, APIResponse, KVNamespaceInfo } from '../types';
 import { createCfApiRequest, getD1Binding, getMockNamespaceInfo, auditLog } from '../utils/helpers';
+import { logInfo, logError, createErrorContext } from '../utils/error-logger';
 
 export async function handleNamespaceRoutes(
   request: Request,
@@ -12,7 +13,7 @@ export async function handleNamespaceRoutes(
   const db = getD1Binding(env);
 
   try {
-    // GET /api/namespaces - List all namespaces
+    // GET /api/namespaces - List all namespaces (with key counts)
     if (url.pathname === '/api/namespaces' && request.method === 'GET') {
       if (isLocalDev) {
         const mockNamespaces = getMockNamespaceInfo();
@@ -28,10 +29,48 @@ export async function handleNamespaceRoutes(
       const cfRequest = createCfApiRequest(`/accounts/${env.ACCOUNT_ID}/storage/kv/namespaces`, env);
       const cfResponse = await fetch(cfRequest);
       const data = await cfResponse.json() as { result: KVNamespaceInfo[] };
+      const namespaces = data.result || [];
+
+      // Fetch key counts for each namespace using batched parallel requests (max 5 concurrent)
+      const BATCH_SIZE = 5;
+      const namespacesWithCounts: KVNamespaceInfo[] = [];
+
+      for (let i = 0; i < namespaces.length; i += BATCH_SIZE) {
+        const batch = namespaces.slice(i, i + BATCH_SIZE);
+        const batchResults = await Promise.all(
+          batch.map(async (ns) => {
+            try {
+              // Fetch keys with limit=1000 to get count (and detect if there are more)
+              const keysRequest = createCfApiRequest(
+                `/accounts/${env.ACCOUNT_ID}/storage/kv/namespaces/${ns.id}/keys?limit=1000`,
+                env
+              );
+              const keysResponse = await fetch(keysRequest);
+              if (keysResponse.ok) {
+                const keysData = await keysResponse.json() as {
+                  result?: unknown[];
+                  result_info?: { cursor?: string }
+                };
+                const keyCount = keysData.result?.length ?? 0;
+                const hasMore = !!keysData.result_info?.cursor;
+                return {
+                  ...ns,
+                  // If there are more keys (cursor exists), show "1000+" equivalent
+                  estimated_key_count: hasMore ? keyCount : keyCount,
+                };
+              }
+              return ns; // Return without count if fetch fails
+            } catch {
+              return ns; // Return without count on error
+            }
+          })
+        );
+        namespacesWithCounts.push(...batchResults);
+      }
 
       const response: APIResponse<KVNamespaceInfo[]> = {
         success: true,
-        result: data.result || []
+        result: namespacesWithCounts
       };
 
       return new Response(JSON.stringify(response), {
@@ -69,9 +108,10 @@ export async function handleNamespaceRoutes(
         });
       }
 
-      console.log('[Namespaces] Creating namespace:', body.title);
-      console.log('[Namespaces] Account ID:', env.ACCOUNT_ID);
-      
+      logInfo('Creating namespace', createErrorContext('namespaces', 'create_namespace', {
+        metadata: { title: body.title, accountId: env.ACCOUNT_ID }
+      }));
+
       const cfRequest = createCfApiRequest(
         `/accounts/${env.ACCOUNT_ID}/storage/kv/namespaces`,
         env,
@@ -82,14 +122,18 @@ export async function handleNamespaceRoutes(
       );
 
       const cfResponse = await fetch(cfRequest);
-      console.log('[Namespaces] Cloudflare API response status:', cfResponse.status);
-      
+      logInfo('Cloudflare API response', createErrorContext('namespaces', 'create_namespace', {
+        metadata: { status: cfResponse.status }
+      }));
+
       if (!cfResponse.ok) {
         const errorText = await cfResponse.text();
-        console.error('[Namespaces] Cloudflare API error:', errorText);
+        await logError(env, `Cloudflare API error: ${errorText}`, createErrorContext('namespaces', 'create_namespace', {
+          metadata: { status: cfResponse.status, title: body.title }
+        }), isLocalDev);
         throw new Error(`Cloudflare API error: ${cfResponse.status} - ${errorText}`);
       }
-      
+
       const data = await cfResponse.json() as { result: KVNamespaceInfo };
 
       // Log audit entry
@@ -114,6 +158,12 @@ export async function handleNamespaceRoutes(
     const renameMatch = url.pathname.match(/^\/api\/namespaces\/([^/]+)\/rename$/);
     if (renameMatch && request.method === 'PATCH') {
       const namespaceId = renameMatch[1];
+      if (!namespaceId) {
+        return new Response(JSON.stringify({ error: 'Missing namespace ID' }), {
+          status: 400,
+          headers: { 'Content-Type': 'application/json', ...corsHeaders }
+        });
+      }
       const body = await request.json() as { title: string };
 
       if (!body.title) {
@@ -123,7 +173,10 @@ export async function handleNamespaceRoutes(
         });
       }
 
-      console.log('[Namespaces] Renaming namespace:', namespaceId, 'to:', body.title);
+      logInfo('Renaming namespace', createErrorContext('namespaces', 'rename_namespace', {
+        ...(namespaceId !== undefined && { namespaceId }),
+        metadata: { newTitle: body.title }
+      }));
 
       if (isLocalDev) {
         const response: APIResponse<KVNamespaceInfo> = {
@@ -154,7 +207,10 @@ export async function handleNamespaceRoutes(
 
       if (!cfResponse.ok) {
         const errorText = await cfResponse.text();
-        console.error('[Namespaces] Cloudflare API error:', errorText);
+        await logError(env, `Cloudflare API error: ${errorText}`, createErrorContext('namespaces', 'rename_namespace', {
+          ...(namespaceId !== undefined && { namespaceId }),
+          metadata: { status: cfResponse.status }
+        }), isLocalDev);
         throw new Error(`Cloudflare API error: ${cfResponse.status} - ${errorText}`);
       }
 
@@ -182,6 +238,12 @@ export async function handleNamespaceRoutes(
     const deleteMatch = url.pathname.match(/^\/api\/namespaces\/([^/]+)$/);
     if (deleteMatch && request.method === 'DELETE') {
       const namespaceId = deleteMatch[1];
+      if (!namespaceId) {
+        return new Response(JSON.stringify({ error: 'Missing namespace ID' }), {
+          status: 400,
+          headers: { 'Content-Type': 'application/json', ...corsHeaders }
+        });
+      }
 
       if (isLocalDev) {
         const response: APIResponse = {
@@ -223,7 +285,7 @@ export async function handleNamespaceRoutes(
       headers: { 'Content-Type': 'application/json', ...corsHeaders }
     });
   } catch (error) {
-    console.error('[Namespaces] Error:', error);
+    await logError(env, error instanceof Error ? error : String(error), createErrorContext('namespaces', 'handle_request'), isLocalDev);
     return new Response(
       JSON.stringify({ error: 'Internal Server Error' }),
       {

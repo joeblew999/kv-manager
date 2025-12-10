@@ -44,23 +44,23 @@ interface ThemeProviderProps {
 
 export function ThemeProvider({ children }: ThemeProviderProps): React.JSX.Element {
   const [theme, setThemeState] = useState<ThemeMode>(getStoredTheme)
-  
+
   // Compute resolved theme based on current theme
   const resolvedTheme = useMemo(() => resolveTheme(theme), [theme])
 
   // Apply theme to document
   useEffect(() => {
     const root = document.documentElement
-    
+
     // Remove existing theme classes
     root.classList.remove('light', 'dark')
-    
+
     // Add the resolved theme class
     root.classList.add(resolvedTheme)
-    
+
     // Also set data-theme for potential CSS usage
     root.setAttribute('data-theme', resolvedTheme)
-    
+
     // Update meta theme-color for mobile browsers
     const metaThemeColor = document.querySelector('meta[name="theme-color"]')
     if (metaThemeColor) {
@@ -75,10 +75,10 @@ export function ThemeProvider({ children }: ThemeProviderProps): React.JSX.Eleme
 
   // Listen for system theme changes when in 'system' mode
   useEffect(() => {
-    if (theme !== 'system') return
+    if (theme !== 'system') return undefined
 
     const mediaQuery = window.matchMedia('(prefers-color-scheme: dark)')
-    
+
     const handleChange = (): void => {
       // Trigger a re-render by updating the theme state
       // This will cause resolvedTheme to recalculate
@@ -95,6 +95,7 @@ export function ThemeProvider({ children }: ThemeProviderProps): React.JSX.Eleme
       mediaQuery.addListener(handleChange)
       return (): void => mediaQuery.removeListener(handleChange)
     }
+    return undefined
   }, [theme])
 
   const setTheme = (newTheme: ThemeMode): void => {

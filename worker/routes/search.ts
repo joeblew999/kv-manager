@@ -1,5 +1,6 @@
 import type { Env, APIResponse } from '../types';
 import { getD1Binding } from '../utils/helpers';
+import { logInfo, logError, createErrorContext } from '../utils/error-logger';
 
 export async function handleSearchRoutes(
   request: Request,
@@ -7,7 +8,7 @@ export async function handleSearchRoutes(
   url: URL,
   corsHeaders: HeadersInit,
   isLocalDev: boolean,
-  _userEmail: string  
+  _userEmail: string
 ): Promise<Response> {
   const db = getD1Binding(env);
 
@@ -19,8 +20,10 @@ export async function handleSearchRoutes(
       const tagsParam = url.searchParams.get('tags');
       const tags = tagsParam ? tagsParam.split(',').map(t => t.trim()).filter(Boolean) : [];
 
-      console.log('[Search] Searching with query:', query, 'namespace:', namespaceId, 'tags:', tags);
-      console.log('[Search] URL search params:', Object.fromEntries(url.searchParams.entries()));
+      logInfo('Searching keys', createErrorContext('search', 'search_keys', {
+        ...(namespaceId !== null && { namespaceId }),
+        metadata: { query, tags, searchParams: Object.fromEntries(url.searchParams.entries()) }
+      }));
 
       if (isLocalDev || !db) {
         // Return mock search results
@@ -62,9 +65,11 @@ export async function handleSearchRoutes(
       const bindings: (string | null)[] = [];
       const conditions: string[] = [];
 
-      // Add query filter (key name pattern)
+      // Add query filter - search both key name AND tags
       if (query) {
-        conditions.push('key_name LIKE ?');
+        // Search key_name OR any tag containing the query
+        conditions.push('(key_name LIKE ? OR tags LIKE ?)');
+        bindings.push(`%${query}%`);
         bindings.push(`%${query}%`);
       }
 
@@ -74,7 +79,7 @@ export async function handleSearchRoutes(
         bindings.push(namespaceId);
       }
 
-      // Add tags filter (check if any tag matches)
+      // Add explicit tags filter (for when user wants to filter by specific tags)
       if (tags.length > 0) {
         const tagConditions = tags.map(() => 'tags LIKE ?').join(' OR ');
         conditions.push(`(${tagConditions})`);
@@ -88,23 +93,29 @@ export async function handleSearchRoutes(
 
       sql += ' ORDER BY updated_at DESC LIMIT 100';
 
-      console.log('[Search] SQL:', sql, 'Bindings:', bindings);
+      logInfo('Executing search query', createErrorContext('search', 'search_keys', {
+        metadata: { sql, bindingsCount: bindings.length }
+      }));
 
       // Execute query
       const stmt = db.prepare(sql);
       const results = await stmt.bind(...bindings).all();
 
-      console.log('[Search] D1 returned', results.results?.length || 0, 'results');
+      logInfo('D1 returned results', createErrorContext('search', 'search_keys', {
+        metadata: { resultCount: results.results?.length ?? 0 }
+      }));
 
       // Parse JSON fields
       const parsedResults = (results.results || []).map((row: Record<string, unknown>) => ({
-        namespace_id: row.namespace_id,
-        key_name: row.key_name,
-        tags: row.tags ? JSON.parse(row.tags as string) : [],
-        custom_metadata: row.custom_metadata ? JSON.parse(row.custom_metadata as string) : {}
+        namespace_id: row['namespace_id'],
+        key_name: row['key_name'],
+        tags: row['tags'] ? JSON.parse(row['tags'] as string) : [],
+        custom_metadata: row['custom_metadata'] ? JSON.parse(row['custom_metadata'] as string) : {}
       }));
-      
-      console.log('[Search] Parsed results:', parsedResults.length, 'keys found');
+
+      logInfo('Parsed results', createErrorContext('search', 'search_keys', {
+        metadata: { parsedCount: parsedResults.length }
+      }));
 
       const response: APIResponse = {
         success: true,
@@ -122,7 +133,7 @@ export async function handleSearchRoutes(
       headers: { 'Content-Type': 'application/json', ...corsHeaders }
     });
   } catch (error) {
-    console.error('[Search] Error:', error);
+    await logError(env, error instanceof Error ? error : String(error), createErrorContext('search', 'handle_request'), isLocalDev);
     return new Response(
       JSON.stringify({ error: 'Internal Server Error' }),
       {

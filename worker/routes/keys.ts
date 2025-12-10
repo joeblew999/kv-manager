@@ -1,5 +1,6 @@
 import type { Env, APIResponse, KVKeyInfo } from '../types';
 import { createCfApiRequest, getD1Binding, auditLog } from '../utils/helpers';
+import { logInfo, logWarning, logError, createErrorContext } from '../utils/error-logger';
 
 export async function handleKeyRoutes(
   request: Request,
@@ -19,14 +20,17 @@ export async function handleKeyRoutes(
       const prefix = url.searchParams.get('prefix') || undefined;
       const limit = url.searchParams.get('limit') || '1000';
 
-      console.log('[Keys] Listing keys for namespace:', namespaceId, { prefix, limit });
+      logInfo('Listing keys for namespace', createErrorContext('keys', 'list_keys', {
+        ...(namespaceId !== undefined && { namespaceId }),
+        metadata: { prefix, limit }
+      }));
 
       if (isLocalDev) {
         // Return mock keys
         const mockKeys: KVKeyInfo[] = [
-          { name: 'test-key-1', expiration: undefined, metadata: {} },
+          { name: 'test-key-1', metadata: {} },
           { name: 'test-key-2', expiration: Math.floor(Date.now() / 1000) + 86400, metadata: {} },
-          { name: 'config-key', expiration: undefined, metadata: { version: '1.0' } }
+          { name: 'config-key', metadata: { version: '1.0' } }
         ];
 
         const response: APIResponse = {
@@ -53,11 +57,17 @@ export async function handleKeyRoutes(
       );
 
       const cfResponse = await fetch(cfRequest);
-      console.log('[Keys] Cloudflare API response status:', cfResponse.status);
+      logInfo('Cloudflare API response', createErrorContext('keys', 'list_keys', {
+        ...(namespaceId !== undefined && { namespaceId }),
+        metadata: { status: cfResponse.status }
+      }));
 
       if (!cfResponse.ok) {
         const errorText = await cfResponse.text();
-        console.error('[Keys] Cloudflare API error:', errorText);
+        await logError(env, `Cloudflare API error: ${errorText}`, createErrorContext('keys', 'list_keys', {
+          ...(namespaceId !== undefined && { namespaceId }),
+          metadata: { status: cfResponse.status }
+        }), isLocalDev);
         throw new Error(`Cloudflare API error: ${cfResponse.status} - ${errorText}`);
       }
 
@@ -80,9 +90,19 @@ export async function handleKeyRoutes(
     const getMatch = url.pathname.match(/^\/api\/keys\/([^/]+)\/([^/]+)$/);
     if (getMatch && request.method === 'GET' && !url.pathname.endsWith('/list')) {
       const namespaceId = getMatch[1];
-      const keyName = decodeURIComponent(getMatch[2]);
+      const keyNameEncoded = getMatch[2];
+      if (!namespaceId || !keyNameEncoded) {
+        return new Response(JSON.stringify({ error: 'Missing namespace ID or key name' }), {
+          status: 400,
+          headers: { 'Content-Type': 'application/json', ...corsHeaders }
+        });
+      }
+      const keyName = decodeURIComponent(keyNameEncoded);
 
-      console.log('[Keys] Getting key:', keyName, 'from namespace:', namespaceId);
+      logInfo('Getting key', createErrorContext('keys', 'get_key', {
+        ...(namespaceId !== undefined && { namespaceId }),
+        keyName
+      }));
 
       if (isLocalDev) {
         // Return mock key data
@@ -111,24 +131,53 @@ export async function handleKeyRoutes(
 
       if (!cfResponse.ok) {
         const errorText = await cfResponse.text();
-        console.error('[Keys] Cloudflare API error:', errorText);
+        await logError(env, `Cloudflare API error: ${errorText}`, createErrorContext('keys', 'get_key', {
+          ...(namespaceId !== undefined && { namespaceId }),
+          keyName,
+          metadata: { status: cfResponse.status }
+        }), isLocalDev);
         throw new Error(`Cloudflare API error: ${cfResponse.status} - ${errorText}`);
       }
 
       const value = await cfResponse.text();
-      
+
       // Get metadata separately
       const metadataRequest = createCfApiRequest(
         `/accounts/${env.ACCOUNT_ID}/storage/kv/namespaces/${namespaceId}/metadata/${encodeURIComponent(keyName)}`,
         env
       );
-      
+
       const metadataResponse = await fetch(metadataRequest);
       let metadata = {};
-      
+
       if (metadataResponse.ok) {
         const metadataData = await metadataResponse.json() as { result?: Record<string, unknown> };
         metadata = metadataData.result || {};
+      }
+
+      // Fetch key info (including expiration) from keys list endpoint
+      // The /values endpoint doesn't return expiration, but /keys does
+      let expiration: number | undefined;
+      try {
+        const keyInfoRequest = createCfApiRequest(
+          `/accounts/${env.ACCOUNT_ID}/storage/kv/namespaces/${namespaceId}/keys?prefix=${encodeURIComponent(keyName)}&limit=100`,
+          env
+        );
+        const keyInfoResponse = await fetch(keyInfoRequest);
+        if (keyInfoResponse.ok) {
+          const keyInfoData = await keyInfoResponse.json() as { result?: KVKeyInfo[] };
+          // Find the exact key match (prefix search might return multiple keys)
+          const keyInfo = keyInfoData.result?.find(k => k.name === keyName);
+          if (keyInfo?.expiration) {
+            expiration = keyInfo.expiration;
+          }
+        }
+      } catch {
+        // If fetching key info fails, continue without expiration
+        logWarning('Failed to fetch key expiration info', createErrorContext('keys', 'get_key', {
+          ...(namespaceId !== undefined && { namespaceId }),
+          keyName
+        }));
       }
 
       const response: APIResponse = {
@@ -137,7 +186,8 @@ export async function handleKeyRoutes(
           name: keyName,
           value: value,
           size: new Blob([value]).size,
-          metadata: metadata
+          metadata: metadata,
+          expiration: expiration
         }
       };
 
@@ -150,10 +200,17 @@ export async function handleKeyRoutes(
     const putMatch = url.pathname.match(/^\/api\/keys\/([^/]+)\/([^/]+)$/);
     if (putMatch && request.method === 'PUT') {
       const namespaceId = putMatch[1];
-      const keyName = decodeURIComponent(putMatch[2]);
-      const body = await request.json() as { 
-        value: string; 
-        metadata?: unknown; 
+      const keyNameEncoded = putMatch[2];
+      if (!namespaceId || !keyNameEncoded) {
+        return new Response(JSON.stringify({ error: 'Missing namespace ID or key name' }), {
+          status: 400,
+          headers: { 'Content-Type': 'application/json', ...corsHeaders }
+        });
+      }
+      const keyName = decodeURIComponent(keyNameEncoded);
+      const body = await request.json() as {
+        value: string;
+        metadata?: unknown;
         expiration_ttl?: number;
         create_backup?: boolean;
       };
@@ -165,7 +222,10 @@ export async function handleKeyRoutes(
         });
       }
 
-      console.log('[Keys] Putting key:', keyName, 'to namespace:', namespaceId);
+      logInfo('Putting key', createErrorContext('keys', 'put_key', {
+        ...(namespaceId !== undefined && { namespaceId }),
+        keyName
+      }));
 
       if (isLocalDev) {
         const response: APIResponse = {
@@ -185,11 +245,11 @@ export async function handleKeyRoutes(
             env
           );
           const existingResponse = await fetch(existingRequest);
-          
+
           if (existingResponse.ok) {
             const existingValue = await existingResponse.text();
             const backupKey = `__backup__:${keyName}`;
-            
+
             // Store backup with 24 hour TTL
             const backupRequest = createCfApiRequest(
               `/accounts/${env.ACCOUNT_ID}/storage/kv/namespaces/${namespaceId}/values/${encodeURIComponent(backupKey)}?expiration_ttl=86400`,
@@ -200,49 +260,81 @@ export async function handleKeyRoutes(
               }
             );
             await fetch(backupRequest);
-            console.log('[Keys] Created backup for key:', keyName);
+            logInfo('Created backup for key', createErrorContext('keys', 'put_key', {
+              ...(namespaceId !== undefined && { namespaceId }),
+              keyName
+            }));
           }
         } catch (err) {
-          console.error('[Keys] Failed to create backup:', err);
+          logWarning('Failed to create backup', createErrorContext('keys', 'put_key', {
+            ...(namespaceId !== undefined && { namespaceId }),
+            keyName,
+            metadata: { error: err instanceof Error ? err.message : String(err) }
+          }));
           // Continue with put operation even if backup fails
         }
       }
 
-      // Build query params for expiration
-      const params = new URLSearchParams();
-      if (body.expiration_ttl) {
-        params.set('expiration_ttl', body.expiration_ttl.toString());
-      }
+      let cfRequest: Request;
 
-      const queryString = params.toString() ? `?${params.toString()}` : '';
-
-      // Prepare headers for metadata
-      const headers: HeadersInit = {
-        'Content-Type': 'text/plain'
-      };
-
-      // Add metadata if provided (as JSON string in header or body)
-      const requestBody = body.value;
+      // If metadata is provided, use the bulk write API which properly handles metadata
+      // The single key PUT endpoint with FormData doesn't work reliably in Workers
       if (body.metadata) {
-        // For KV API, metadata goes in the request as form data or separate field
-        // We'll use the simpler text PUT for now
-      }
-
-      const cfRequest = createCfApiRequest(
-        `/accounts/${env.ACCOUNT_ID}/storage/kv/namespaces/${namespaceId}/values/${encodeURIComponent(keyName)}${queryString}`,
-        env,
-        {
-          method: 'PUT',
-          body: requestBody,
-          headers: headers
+        interface BulkWriteItem {
+          key: string;
+          value: string;
+          metadata?: unknown;
+          expiration_ttl?: number;
         }
-      );
+
+        const bulkItem: BulkWriteItem = {
+          key: keyName,
+          value: body.value,
+          metadata: body.metadata
+        };
+
+        if (body.expiration_ttl) {
+          bulkItem.expiration_ttl = body.expiration_ttl;
+        }
+
+        cfRequest = createCfApiRequest(
+          `/accounts/${env.ACCOUNT_ID}/storage/kv/namespaces/${namespaceId}/bulk`,
+          env,
+          {
+            method: 'PUT',
+            body: JSON.stringify([bulkItem])
+          }
+        );
+      } else {
+        // No metadata - use simple text/plain request for single key
+        const params = new URLSearchParams();
+        if (body.expiration_ttl) {
+          params.set('expiration_ttl', body.expiration_ttl.toString());
+        }
+        const queryString = params.toString() ? `?${params.toString()}` : '';
+
+        cfRequest = createCfApiRequest(
+          `/accounts/${env.ACCOUNT_ID}/storage/kv/namespaces/${namespaceId}/values/${encodeURIComponent(keyName)}${queryString}`,
+          env,
+          {
+            method: 'PUT',
+            body: body.value,
+            headers: {
+              'Content-Type': 'text/plain'
+            }
+          }
+        );
+      }
 
       const cfResponse = await fetch(cfRequest);
 
       if (!cfResponse.ok) {
         const errorText = await cfResponse.text();
-        console.error('[Keys] Cloudflare API error:', errorText);
+        await logError(env, `Cloudflare API error: ${errorText}`, createErrorContext('keys', 'put_key', {
+          ...(namespaceId !== undefined && { namespaceId }),
+          keyName,
+          metadata: { status: cfResponse.status }
+        }), isLocalDev);
         throw new Error(`Cloudflare API error: ${cfResponse.status} - ${errorText}`);
       }
 
@@ -259,9 +351,16 @@ export async function handleKeyRoutes(
             `)
             .bind(namespaceId, keyName, '[]', '{}')
             .run();
-          console.log('[Keys] Ensured metadata entry exists for key:', keyName);
+          logInfo('Ensured metadata entry exists for key', createErrorContext('keys', 'put_key', {
+            ...(namespaceId !== undefined && { namespaceId }),
+            keyName
+          }));
         } catch (err) {
-          console.error('[Keys] Failed to create/update metadata entry:', err);
+          logWarning('Failed to create/update metadata entry', createErrorContext('keys', 'put_key', {
+            ...(namespaceId !== undefined && { namespaceId }),
+            keyName,
+            metadata: { error: err instanceof Error ? err.message : String(err) }
+          }));
           // Don't fail the whole operation if metadata creation fails
         }
       }
@@ -288,9 +387,19 @@ export async function handleKeyRoutes(
     const deleteMatch = url.pathname.match(/^\/api\/keys\/([^/]+)\/(.+)$/);
     if (deleteMatch && request.method === 'DELETE') {
       const namespaceId = deleteMatch[1];
-      const keyName = decodeURIComponent(deleteMatch[2]);
+      const keyNameEncoded = deleteMatch[2];
+      if (!namespaceId || !keyNameEncoded) {
+        return new Response(JSON.stringify({ error: 'Missing namespace ID or key name' }), {
+          status: 400,
+          headers: { 'Content-Type': 'application/json', ...corsHeaders }
+        });
+      }
+      const keyName = decodeURIComponent(keyNameEncoded);
 
-      console.log('[Keys] Deleting key:', keyName, 'from namespace:', namespaceId);
+      logInfo('Deleting key', createErrorContext('keys', 'delete_key', {
+        ...(namespaceId !== undefined && { namespaceId }),
+        keyName
+      }));
 
       if (isLocalDev) {
         const response: APIResponse = {
@@ -312,8 +421,33 @@ export async function handleKeyRoutes(
 
       if (!cfResponse.ok) {
         const errorText = await cfResponse.text();
-        console.error('[Keys] Cloudflare API error:', errorText);
+        await logError(env, `Cloudflare API error: ${errorText}`, createErrorContext('keys', 'delete_key', {
+          ...(namespaceId !== undefined && { namespaceId }),
+          keyName,
+          metadata: { status: cfResponse.status }
+        }), isLocalDev);
         throw new Error(`Cloudflare API error: ${cfResponse.status} - ${errorText}`);
+      }
+
+      // Delete D1 metadata entry (tags, custom_metadata) for this key
+      if (db) {
+        try {
+          await db
+            .prepare('DELETE FROM key_metadata WHERE namespace_id = ? AND key_name = ?')
+            .bind(namespaceId, keyName)
+            .run();
+          logInfo('Deleted metadata entry for key', createErrorContext('keys', 'delete_key', {
+            ...(namespaceId !== undefined && { namespaceId }),
+            keyName
+          }));
+        } catch (err) {
+          logWarning('Failed to delete metadata entry', createErrorContext('keys', 'delete_key', {
+            ...(namespaceId !== undefined && { namespaceId }),
+            keyName,
+            metadata: { error: err instanceof Error ? err.message : String(err) }
+          }));
+          // Don't fail the whole operation if metadata deletion fails
+        }
       }
 
       // Log audit entry
@@ -346,7 +480,10 @@ export async function handleKeyRoutes(
         });
       }
 
-      console.log('[Keys] Bulk deleting', body.keys.length, 'keys from namespace:', namespaceId);
+      logInfo('Bulk deleting keys from namespace', createErrorContext('keys', 'bulk_delete', {
+        ...(namespaceId !== undefined && { namespaceId }),
+        metadata: { keyCount: body.keys.length }
+      }));
 
       if (isLocalDev) {
         const jobId = `delete-${Date.now()}`;
@@ -390,11 +527,14 @@ export async function handleKeyRoutes(
         })
       });
 
-      console.log('[Keys] Starting bulk delete processing in DO for job:', jobId);
+      logInfo('Starting bulk delete processing in DO', createErrorContext('keys', 'bulk_delete', {
+        metadata: { jobId }
+      }));
 
-      // @ts-expect-error - Request types are compatible at runtime
       const doResponse = await stub.fetch(doRequest);
-      console.log('[Keys] Bulk delete DO processing initiated, response status:', doResponse.status);
+      logInfo('Bulk delete DO processing initiated', createErrorContext('keys', 'bulk_delete', {
+        metadata: { jobId, responseStatus: doResponse.status }
+      }));
 
       // Return immediately with job info
       const response: APIResponse = {
@@ -425,7 +565,10 @@ export async function handleKeyRoutes(
         });
       }
 
-      console.log('[Keys] Bulk copying', body.keys.length, 'keys from', sourceNamespaceId, 'to', body.target_namespace_id);
+      logInfo('Bulk copying keys', createErrorContext('keys', 'bulk_copy', {
+        ...(sourceNamespaceId !== undefined && { namespaceId: sourceNamespaceId }),
+        metadata: { keyCount: body.keys.length, targetNamespaceId: body.target_namespace_id }
+      }));
 
       if (isLocalDev) {
         const jobId = `copy-${Date.now()}`;
@@ -470,11 +613,14 @@ export async function handleKeyRoutes(
         })
       });
 
-      console.log('[Keys] Starting bulk copy processing in DO for job:', jobId);
+      logInfo('Starting bulk copy processing in DO', createErrorContext('keys', 'bulk_copy', {
+        metadata: { jobId }
+      }));
 
-      // @ts-expect-error - Request types are compatible at runtime
       const doResponse = await stub.fetch(doRequest);
-      console.log('[Keys] Bulk copy DO processing initiated, response status:', doResponse.status);
+      logInfo('Bulk copy DO processing initiated', createErrorContext('keys', 'bulk_copy', {
+        metadata: { jobId, responseStatus: doResponse.status }
+      }));
 
       // Return immediately with job info
       const response: APIResponse = {
@@ -505,7 +651,10 @@ export async function handleKeyRoutes(
         });
       }
 
-      console.log('[Keys] Bulk updating TTL for', body.keys.length, 'keys in namespace:', namespaceId);
+      logInfo('Bulk updating TTL for keys', createErrorContext('keys', 'bulk_ttl', {
+        ...(namespaceId !== undefined && { namespaceId }),
+        metadata: { keyCount: body.keys.length, ttl: body.expiration_ttl }
+      }));
 
       if (isLocalDev) {
         const jobId = `ttl-${Date.now()}`;
@@ -550,11 +699,14 @@ export async function handleKeyRoutes(
         })
       });
 
-      console.log('[Keys] Starting bulk TTL processing in DO for job:', jobId);
+      logInfo('Starting bulk TTL processing in DO', createErrorContext('keys', 'bulk_ttl', {
+        metadata: { jobId }
+      }));
 
-      // @ts-expect-error - Request types are compatible at runtime
       const doResponse = await stub.fetch(doRequest);
-      console.log('[Keys] Bulk TTL DO processing initiated, response status:', doResponse.status);
+      logInfo('Bulk TTL DO processing initiated', createErrorContext('keys', 'bulk_ttl', {
+        metadata: { jobId, responseStatus: doResponse.status }
+      }));
 
       // Return immediately with job info
       const response: APIResponse = {
@@ -572,13 +724,275 @@ export async function handleKeyRoutes(
       });
     }
 
+    // POST /api/keys/:namespaceId/rename - Rename a key
+    const renameMatch = /^\/api\/keys\/([^/]+)\/rename$/.exec(url.pathname);
+    if (renameMatch && request.method === 'POST') {
+      const namespaceId = renameMatch[1];
+      if (!namespaceId) {
+        return new Response(JSON.stringify({ error: 'Missing namespace ID' }), {
+          status: 400,
+          headers: { 'Content-Type': 'application/json', ...corsHeaders }
+        });
+      }
+
+      const body = await request.json() as { old_name: string; new_name: string };
+
+      if (!body.old_name || !body.new_name) {
+        return new Response(JSON.stringify({ error: 'Missing old_name or new_name' }), {
+          status: 400,
+          headers: { 'Content-Type': 'application/json', ...corsHeaders }
+        });
+      }
+
+      const oldName = body.old_name;
+      const newName = body.new_name.trim();
+
+      if (oldName === newName) {
+        return new Response(JSON.stringify({ error: 'Old and new names are the same' }), {
+          status: 400,
+          headers: { 'Content-Type': 'application/json', ...corsHeaders }
+        });
+      }
+
+      logInfo('Renaming key', createErrorContext('keys', 'rename_key', {
+        ...(namespaceId !== undefined && { namespaceId }),
+        keyName: oldName,
+        metadata: { newName }
+      }));
+
+      if (isLocalDev) {
+        const response: APIResponse = { success: true };
+        return new Response(JSON.stringify(response), {
+          headers: { 'Content-Type': 'application/json', ...corsHeaders }
+        });
+      }
+
+      // Step 1: Get the existing key value
+      const valueRequest = createCfApiRequest(
+        `/accounts/${env.ACCOUNT_ID}/storage/kv/namespaces/${namespaceId}/values/${encodeURIComponent(oldName)}`,
+        env
+      );
+      const valueResponse = await fetch(valueRequest);
+
+      if (!valueResponse.ok) {
+        const errorText = await valueResponse.text();
+        await logError(env, `Key not found: ${errorText}`, createErrorContext('keys', 'rename_key', {
+          ...(namespaceId !== undefined && { namespaceId }),
+          keyName: oldName,
+          metadata: { status: valueResponse.status, code: 'KEY_RENAME_FAILED' }
+        }), isLocalDev);
+        return new Response(JSON.stringify({ error: 'Key not found' }), {
+          status: 404,
+          headers: { 'Content-Type': 'application/json', ...corsHeaders }
+        });
+      }
+
+      const value = await valueResponse.text();
+
+      // Step 2: Get KV native metadata
+      const metadataRequest = createCfApiRequest(
+        `/accounts/${env.ACCOUNT_ID}/storage/kv/namespaces/${namespaceId}/metadata/${encodeURIComponent(oldName)}`,
+        env
+      );
+      const metadataResponse = await fetch(metadataRequest);
+      let kvMetadata: Record<string, unknown> = {};
+      if (metadataResponse.ok) {
+        const metadataData = await metadataResponse.json() as { result?: Record<string, unknown> };
+        kvMetadata = metadataData.result ?? {};
+      }
+
+      // Step 3: Get expiration info from keys list
+      let expiration: number | undefined;
+      try {
+        const keyInfoRequest = createCfApiRequest(
+          `/accounts/${env.ACCOUNT_ID}/storage/kv/namespaces/${namespaceId}/keys?prefix=${encodeURIComponent(oldName)}&limit=100`,
+          env
+        );
+        const keyInfoResponse = await fetch(keyInfoRequest);
+        if (keyInfoResponse.ok) {
+          const keyInfoData = await keyInfoResponse.json() as { result?: { name: string; expiration?: number }[] };
+          const keyInfo = keyInfoData.result?.find(k => k.name === oldName);
+          if (keyInfo?.expiration) {
+            expiration = keyInfo.expiration;
+          }
+        }
+      } catch {
+        logWarning('Failed to fetch key expiration info for rename', createErrorContext('keys', 'rename_key', {
+          ...(namespaceId !== undefined && { namespaceId }),
+          keyName: oldName
+        }));
+      }
+
+      // Step 4: Get D1 metadata (tags, custom_metadata)
+      let d1Tags: string[] = [];
+      let d1CustomMetadata: Record<string, unknown> = {};
+      if (db) {
+        try {
+          const d1Result = await db
+            .prepare('SELECT tags, custom_metadata FROM key_metadata WHERE namespace_id = ? AND key_name = ?')
+            .bind(namespaceId, oldName)
+            .first<{ tags: string; custom_metadata: string }>();
+          if (d1Result) {
+            d1Tags = JSON.parse(d1Result.tags || '[]') as string[];
+            d1CustomMetadata = JSON.parse(d1Result.custom_metadata || '{}') as Record<string, unknown>;
+          }
+        } catch (err) {
+          logWarning('Failed to fetch D1 metadata for rename', createErrorContext('keys', 'rename_key', {
+            ...(namespaceId !== undefined && { namespaceId }),
+            keyName: oldName,
+            metadata: { error: err instanceof Error ? err.message : String(err) }
+          }));
+        }
+      }
+
+      // Step 5: Write to new key name with value and metadata
+      let putRequest: Request;
+      const hasMetadata = Object.keys(kvMetadata).length > 0;
+
+      if (hasMetadata) {
+        // Use bulk write API for metadata support
+        interface BulkWriteItem {
+          key: string;
+          value: string;
+          metadata?: Record<string, unknown>;
+          expiration?: number;
+        }
+
+        const bulkItem: BulkWriteItem = {
+          key: newName,
+          value: value,
+          metadata: kvMetadata
+        };
+
+        if (expiration) {
+          bulkItem.expiration = expiration;
+        }
+
+        putRequest = createCfApiRequest(
+          `/accounts/${env.ACCOUNT_ID}/storage/kv/namespaces/${namespaceId}/bulk`,
+          env,
+          {
+            method: 'PUT',
+            body: JSON.stringify([bulkItem])
+          }
+        );
+      } else {
+        // Simple write without metadata
+        const params = new URLSearchParams();
+        if (expiration) {
+          params.set('expiration', expiration.toString());
+        }
+        const queryString = params.toString() ? `?${params.toString()}` : '';
+
+        putRequest = createCfApiRequest(
+          `/accounts/${env.ACCOUNT_ID}/storage/kv/namespaces/${namespaceId}/values/${encodeURIComponent(newName)}${queryString}`,
+          env,
+          {
+            method: 'PUT',
+            body: value,
+            headers: { 'Content-Type': 'text/plain' }
+          }
+        );
+      }
+
+      const putResponse = await fetch(putRequest);
+
+      if (!putResponse.ok) {
+        const errorText = await putResponse.text();
+        await logError(env, `Failed to write new key: ${errorText}`, createErrorContext('keys', 'rename_key', {
+          ...(namespaceId !== undefined && { namespaceId }),
+          keyName: newName,
+          metadata: { status: putResponse.status, code: 'KEY_RENAME_FAILED' }
+        }), isLocalDev);
+        return new Response(JSON.stringify({ error: 'Failed to create renamed key' }), {
+          status: 500,
+          headers: { 'Content-Type': 'application/json', ...corsHeaders }
+        });
+      }
+
+      // Step 6: Create D1 metadata entry for new key
+      if (db) {
+        try {
+          await db
+            .prepare(`
+              INSERT INTO key_metadata (namespace_id, key_name, tags, custom_metadata, created_at, updated_at)
+              VALUES (?, ?, ?, ?, datetime('now'), datetime('now'))
+              ON CONFLICT(namespace_id, key_name)
+              DO UPDATE SET tags = excluded.tags, custom_metadata = excluded.custom_metadata, updated_at = datetime('now')
+            `)
+            .bind(namespaceId, newName, JSON.stringify(d1Tags), JSON.stringify(d1CustomMetadata))
+            .run();
+        } catch (err) {
+          logWarning('Failed to create D1 metadata for new key', createErrorContext('keys', 'rename_key', {
+            ...(namespaceId !== undefined && { namespaceId }),
+            keyName: newName,
+            metadata: { error: err instanceof Error ? err.message : String(err) }
+          }));
+        }
+      }
+
+      // Step 7: Delete old key from KV (only after successful write)
+      const deleteRequest = createCfApiRequest(
+        `/accounts/${env.ACCOUNT_ID}/storage/kv/namespaces/${namespaceId}/values/${encodeURIComponent(oldName)}`,
+        env,
+        { method: 'DELETE' }
+      );
+      const deleteResponse = await fetch(deleteRequest);
+
+      if (!deleteResponse.ok) {
+        logWarning('Failed to delete old key after rename', createErrorContext('keys', 'rename_key', {
+          ...(namespaceId !== undefined && { namespaceId }),
+          keyName: oldName,
+          metadata: { status: deleteResponse.status }
+        }));
+        // Don't fail the operation - the rename was successful, just cleanup failed
+      }
+
+      // Step 8: Delete old D1 metadata entry
+      if (db) {
+        try {
+          await db
+            .prepare('DELETE FROM key_metadata WHERE namespace_id = ? AND key_name = ?')
+            .bind(namespaceId, oldName)
+            .run();
+        } catch (err) {
+          logWarning('Failed to delete old D1 metadata', createErrorContext('keys', 'rename_key', {
+            ...(namespaceId !== undefined && { namespaceId }),
+            keyName: oldName,
+            metadata: { error: err instanceof Error ? err.message : String(err) }
+          }));
+        }
+      }
+
+      // Step 9: Log audit entry
+      await auditLog(db, {
+        namespace_id: namespaceId,
+        key_name: newName,
+        operation: 'rename',
+        user_email: userEmail,
+        details: JSON.stringify({ old_name: oldName, new_name: newName })
+      });
+
+      logInfo('Key renamed successfully', createErrorContext('keys', 'rename_key', {
+        ...(namespaceId !== undefined && { namespaceId }),
+        keyName: newName,
+        metadata: { oldName }
+      }));
+
+      const response: APIResponse = { success: true };
+
+      return new Response(JSON.stringify(response), {
+        headers: { 'Content-Type': 'application/json', ...corsHeaders }
+      });
+    }
+
     // 404 for unknown routes
     return new Response(JSON.stringify({ error: 'Not Found' }), {
       status: 404,
       headers: { 'Content-Type': 'application/json', ...corsHeaders }
     });
   } catch (error) {
-    console.error('[Keys] Error:', error);
+    await logError(env, error instanceof Error ? error : String(error), createErrorContext('keys', 'handle_request'), isLocalDev);
     return new Response(
       JSON.stringify({ error: 'Internal Server Error' }),
       {

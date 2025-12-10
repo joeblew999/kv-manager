@@ -2,27 +2,30 @@ import React, { useState, useEffect } from 'react'
 import { Button } from './ui/button'
 import { Input } from './ui/input'
 import { Label } from './ui/label'
-import { Textarea } from './ui/textarea'
 import { Badge } from './ui/badge'
-import { X } from 'lucide-react'
+import { X, Check } from 'lucide-react'
 import { api } from '../services/api'
 import { isValidJSON } from '../lib/utils'
 import { logger } from '../lib/logger'
+import { JsonEditor } from './ui/JsonEditor'
 
 interface MetadataEditorProps {
   namespaceId: string
   keyName: string
   onSave?: () => void
+  /** Whether the KV Native Metadata in parent is valid (disables Save if false) */
+  kvMetadataValid?: boolean
 }
 
-export function MetadataEditor({ namespaceId, keyName, onSave }: MetadataEditorProps): React.JSX.Element {
+export function MetadataEditor({ namespaceId, keyName, onSave, kvMetadataValid = true }: MetadataEditorProps): React.JSX.Element {
   const [tags, setTags] = useState<string[]>([])
   const [newTag, setNewTag] = useState('')
   const [customMetadata, setCustomMetadata] = useState('')
   const [loading, setLoading] = useState(true)
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState('')
-  const [metadataError, setMetadataError] = useState('')
+  const [saveSuccess, setSaveSuccess] = useState(false)
+  const [isCustomMetadataValid, setIsCustomMetadataValid] = useState(true)
 
   useEffect(() => {
     loadMetadata()
@@ -60,13 +63,13 @@ export function MetadataEditor({ namespaceId, keyName, onSave }: MetadataEditorP
     try {
       setSaving(true)
       setError('')
-      setMetadataError('')
+      setSaveSuccess(false)
 
-      // Validate custom metadata JSON
+      // Parse custom metadata JSON (JsonEditor already validates, but double-check)
       let parsedMetadata = {}
       if (customMetadata.trim()) {
         if (!isValidJSON(customMetadata)) {
-          setMetadataError('Invalid JSON format')
+          setError('Invalid JSON format in custom metadata')
           return
         }
         parsedMetadata = JSON.parse(customMetadata)
@@ -76,6 +79,11 @@ export function MetadataEditor({ namespaceId, keyName, onSave }: MetadataEditorP
         tags,
         custom_metadata: parsedMetadata
       })
+
+      // Show success feedback
+      setSaveSuccess(true)
+      // Auto-hide success message after 3 seconds
+      setTimeout(() => setSaveSuccess(false), 3000)
 
       onSave?.()
     } catch (err) {
@@ -115,6 +123,7 @@ export function MetadataEditor({ namespaceId, keyName, onSave }: MetadataEditorP
             }}
             placeholder="Add a tag..."
             className="flex-1"
+            autoComplete="off"
           />
           <Button onClick={handleAddTag} variant="outline" size="sm">
             Add Tag
@@ -138,31 +147,26 @@ export function MetadataEditor({ namespaceId, keyName, onSave }: MetadataEditorP
       </div>
 
       {/* Custom Metadata Section */}
-      <div className="space-y-2">
-        <Label htmlFor="custom-metadata">Custom Metadata (JSON)</Label>
-        <Textarea
-          id="custom-metadata"
-          name="custom-metadata"
-          value={customMetadata}
-          onChange={(e) => {
-            setCustomMetadata(e.target.value)
-            setMetadataError('')
-          }}
-          placeholder='{"key": "value"}'
-          className="font-mono text-sm min-h-[150px]"
-        />
-        {metadataError && (
-          <div className="text-sm text-red-600 dark:text-red-400">
-            {metadataError}
+      <JsonEditor
+        id="custom-metadata"
+        name="custom-metadata"
+        label="Custom Metadata (JSON)"
+        value={customMetadata}
+        onChange={setCustomMetadata}
+        onValidityChange={setIsCustomMetadataValid}
+        placeholder='{"key": "value"}'
+        helpText="Enter valid JSON for custom metadata fields"
+        rows={6}
+      />
+
+      <div className="flex items-center justify-end gap-3">
+        {saveSuccess && (
+          <div className="flex items-center gap-1 text-sm text-green-600 dark:text-green-400">
+            <Check className="h-4 w-4" />
+            <span>Metadata saved</span>
           </div>
         )}
-        <p className="text-xs text-muted-foreground">
-          Enter valid JSON for custom metadata fields
-        </p>
-      </div>
-
-      <div className="flex justify-end">
-        <Button onClick={handleSave} disabled={saving}>
+        <Button onClick={handleSave} disabled={saving || !isCustomMetadataValid || !kvMetadataValid}>
           {saving ? 'Saving...' : 'Save Metadata'}
         </Button>
       </div>

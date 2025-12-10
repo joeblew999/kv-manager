@@ -83,7 +83,7 @@ export function JobHistory({ namespaces }: JobHistoryProps): React.JSX.Element {
       if (datePreset !== 'all' && datePreset !== 'custom') {
         const now = new Date();
         let startDate: Date;
-        
+
         switch (datePreset) {
           case '24h':
             startDate = new Date(now.getTime() - 24 * 60 * 60 * 1000);
@@ -97,7 +97,7 @@ export function JobHistory({ namespaces }: JobHistoryProps): React.JSX.Element {
           default:
             startDate = now;
         }
-        
+
         options.start_date = startDate.toISOString();
       } else if (datePreset === 'custom') {
         if (dateRange.from) {
@@ -399,7 +399,7 @@ export function JobHistory({ namespaces }: JobHistoryProps): React.JSX.Element {
                         selected={dateRange}
                         onSelect={(range) => setDateRange({ from: range?.from, to: range?.to })}
                         numberOfMonths={2}
-                        defaultMonth={dateRange.from}
+                        {...(dateRange.from ? { defaultMonth: dateRange.from } : {})}
                       />
                     </PopoverContent>
                   </Popover>

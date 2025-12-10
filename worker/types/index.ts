@@ -8,18 +8,18 @@ export interface Env {
   BULK_OPERATION_DO: DurableObjectNamespace
   IMPORT_EXPORT_DO: DurableObjectNamespace
   BACKUP_BUCKET?: R2Bucket // Optional for local dev
-  
+
   // Cloudflare API credentials (secrets in production, undefined in local dev)
   ACCOUNT_ID?: string
   API_KEY?: string
-  
+
   // Cloudflare Access JWT validation
   TEAM_DOMAIN?: string
   POLICY_AUD?: string
-  
+
   // Environment indicator
   ENVIRONMENT?: string
-  
+
   // Dynamic KV namespace bindings (configured in wrangler.toml)
   [key: string]: unknown
 }
@@ -141,9 +141,9 @@ export interface BulkDeleteParams {
 
 export interface ImportParams {
   namespaceId: string
-  importData: { 
-    name: string; 
-    value: string; 
+  importData: {
+    name: string;
+    value: string;
     metadata?: Record<string, unknown>;  // KV native metadata (1024 byte limit)
     custom_metadata?: Record<string, unknown>;  // D1 custom metadata (no limit)
     tags?: string[];  // D1 tags
@@ -207,5 +207,95 @@ export interface MockKVData {
   metadata: Record<string, KeyMetadata>
   auditLog: AuditLogEntry[]
   bulkJobs: BulkJob[]
+}
+
+// Webhook Types
+// Database representation (as stored in D1)
+export interface WebhookDB {
+  id: string
+  url: string
+  events: string // JSON string of WebhookEventType[]
+  secret?: string | null
+  enabled: number // 0 or 1
+  created_at: string
+  updated_at?: string
+}
+
+// API representation (for frontend/API responses)
+export interface Webhook {
+  id: string
+  url: string
+  events: WebhookEventType[]
+  secret?: string
+  enabled: boolean
+  created_at: string
+  updated_at?: string
+}
+
+export type WebhookEventType =
+  | 'key.created'
+  | 'key.updated'
+  | 'key.deleted'
+  | 'namespace.created'
+  | 'namespace.deleted'
+  | 'job.completed'
+  | 'job.failed'
+
+export interface WebhookTestResult {
+  success: boolean
+  statusText?: string
+  error?: string
+}
+
+export interface WebhookPayload {
+  event: WebhookEventType
+  timestamp: string
+  data: unknown
+}
+
+// Error Logging Types
+export interface ErrorContext {
+  module: string
+  operation: string
+  entityId?: string
+  [key: string]: unknown
+}
+
+export type ErrorSeverity = 'error' | 'warning' | 'info'
+
+export interface StructuredError {
+  level: ErrorSeverity
+  module: string
+  code: string
+  message: string
+  context?: ErrorContext
+  stack?: string
+  timestamp: string
+}
+
+// CORS Types
+export type CorsHeaders = HeadersInit
+
+// Migration Types (for API responses)
+export interface MigrationStatusResponse {
+  currentVersion: number
+  latestVersion: number
+  pendingMigrations: { version: number; name: string; description: string }[]
+  appliedMigrations: { version: number; migration_name: string; applied_at: string }[]
+  isUpToDate: boolean
+  legacy?: LegacyInstallationInfoResponse
+}
+
+export interface LegacyInstallationInfoResponse {
+  isLegacy: boolean
+  existingTables: string[]
+  suggestedVersion: number
+}
+
+export interface MigrationResultResponse {
+  success: boolean
+  migrationsApplied: number
+  currentVersion: number
+  errors: string[]
 }
 

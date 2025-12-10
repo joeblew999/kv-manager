@@ -1,5 +1,6 @@
 import type { Env, APIResponse } from '../types';
 import { getD1Binding } from '../utils/helpers';
+import { logInfo, logError, createErrorContext } from '../utils/error-logger';
 
 export async function handleImportExportRoutes(
   request: Request,
@@ -18,7 +19,10 @@ export async function handleImportExportRoutes(
       const namespaceId = exportMatch[1];
       const format = url.searchParams.get('format') || 'json';
 
-      console.log('[Export] Exporting namespace:', namespaceId, 'format:', format);
+      logInfo('Exporting namespace', createErrorContext('export', 'start_export', {
+        ...(namespaceId !== undefined && { namespaceId }),
+        metadata: { format }
+      }));
 
       if (isLocalDev) {
         const jobId = `export-${Date.now()}`;
@@ -63,12 +67,15 @@ export async function handleImportExportRoutes(
         })
       });
 
-      console.log('[Export] Starting async processing in DO for job:', jobId);
+      logInfo('Starting async processing in DO for job', createErrorContext('export', 'start_export', {
+        metadata: { jobId }
+      }));
 
       // Start processing - await to ensure the request is actually sent
-      // @ts-expect-error - Request types are compatible at runtime
       const doResponse = await stub.fetch(doRequest);
-      console.log('[Export] DO processing initiated, response status:', doResponse.status);
+      logInfo('DO processing initiated', createErrorContext('export', 'start_export', {
+        metadata: { jobId, responseStatus: doResponse.status }
+      }));
 
       // Return immediately with job info
       const response: APIResponse = {
@@ -92,11 +99,14 @@ export async function handleImportExportRoutes(
       const body = await request.text();
       const collisionHandling = url.searchParams.get('collision') || 'overwrite';
 
-      console.log('[Import] Importing to namespace:', namespaceId, 'collision:', collisionHandling);
+      logInfo('Importing to namespace', createErrorContext('import', 'start_import', {
+        ...(namespaceId !== undefined && { namespaceId }),
+        metadata: { collisionHandling }
+      }));
 
       // Parse import data (auto-detect JSON vs NDJSON)
       let importData: { name: string; value: string; metadata?: Record<string, unknown>; expiration_ttl?: number }[];
-      
+
       try {
         // Try JSON array first
         importData = JSON.parse(body);
@@ -110,7 +120,10 @@ export async function handleImportExportRoutes(
           .map(line => JSON.parse(line));
       }
 
-      console.log('[Import] Parsed', importData.length, 'items');
+      logInfo(`Parsed ${importData.length} items`, createErrorContext('import', 'start_import', {
+        ...(namespaceId !== undefined && { namespaceId }),
+        metadata: { itemCount: importData.length }
+      }));
 
       if (isLocalDev) {
         const jobId = `import-${Date.now()}`;
@@ -156,12 +169,15 @@ export async function handleImportExportRoutes(
         })
       });
 
-      console.log('[Import] Starting async processing in DO for job:', jobId);
+      logInfo('Starting async processing in DO for job', createErrorContext('import', 'start_import', {
+        metadata: { jobId }
+      }));
 
       // Await to ensure the request is actually sent
-      // @ts-expect-error - Request types are compatible at runtime
       const doResponse = await stub.fetch(doRequest);
-      console.log('[Import] DO processing initiated, response status:', doResponse.status);
+      logInfo('DO processing initiated', createErrorContext('import', 'start_import', {
+        metadata: { jobId, responseStatus: doResponse.status }
+      }));
 
       // Return immediately with job info
       const response: APIResponse = {
@@ -181,7 +197,9 @@ export async function handleImportExportRoutes(
 
     // GET /api/jobs - Get list of user's jobs
     if (url.pathname === '/api/jobs' && request.method === 'GET') {
-      console.log('[Jobs] Getting job list for user:', userEmail);
+      logInfo('Getting job list for user', createErrorContext('jobs', 'list_jobs', {
+        userId: userEmail
+      }));
 
       const limit = parseInt(url.searchParams.get('limit') || '50');
       const offset = parseInt(url.searchParams.get('offset') || '0');
@@ -360,7 +378,7 @@ export async function handleImportExportRoutes(
       }
 
       const countResult = await db.prepare(countQuery).bind(...countBindings).first();
-      const total = (countResult?.total as number) || 0;
+      const total = (countResult?.['total'] as number) || 0;
 
       const response: APIResponse = {
         success: true,
@@ -382,7 +400,9 @@ export async function handleImportExportRoutes(
     if (jobMatch && request.method === 'GET') {
       const jobId = jobMatch[1];
 
-      console.log('[Jobs] Getting status for job:', jobId);
+      logInfo('Getting status for job', createErrorContext('jobs', 'get_job_status', {
+        metadata: { jobId }
+      }));
 
       if (isLocalDev || !db) {
         const response: APIResponse = {
@@ -416,9 +436,12 @@ export async function handleImportExportRoutes(
 
       // For completed export jobs, add download URL
       const jobWithDownload: Record<string, unknown> = { ...job as Record<string, unknown> };
-      if (job.operation_type === 'export' && job.status === 'completed') {
-        jobWithDownload.download_url = `/api/jobs/${jobId}/download`;
-        jobWithDownload.format = jobId.startsWith('export-') ? 'json' : 'json'; // Default format
+      if (job['operation_type'] === 'export' && job['status'] === 'completed') {
+        const jobIdValue = jobMatch[1];
+        if (jobIdValue) {
+          jobWithDownload['download_url'] = `/api/jobs/${jobIdValue}/download`;
+          jobWithDownload['format'] = jobIdValue.startsWith('export-') ? 'json' : 'json'; // Default format
+        }
       }
 
       const response: APIResponse = {
@@ -426,7 +449,7 @@ export async function handleImportExportRoutes(
         result: jobWithDownload
       };
 
-    return new Response(JSON.stringify(response), {
+      return new Response(JSON.stringify(response), {
         headers: { 'Content-Type': 'application/json', ...corsHeaders }
       });
     }
@@ -436,7 +459,9 @@ export async function handleImportExportRoutes(
     if (eventsMatch && request.method === 'GET') {
       const jobId = eventsMatch[1];
 
-      console.log('[Jobs] Getting events for job:', jobId);
+      logInfo('Getting events for job', createErrorContext('jobs', 'get_job_events', {
+        metadata: { jobId }
+      }));
 
       if (!db) {
         return new Response(JSON.stringify({ error: 'Database not available' }), {
@@ -479,12 +504,16 @@ export async function handleImportExportRoutes(
 
       try {
         // Fetch all events for this job
-        console.log('[Jobs] Fetching events for job:', jobId);
+        logInfo('Fetching events for job', createErrorContext('jobs', 'get_job_events', {
+          metadata: { jobId }
+        }));
         const events = await db.prepare(
           'SELECT * FROM job_audit_events WHERE job_id = ? ORDER BY timestamp ASC'
         ).bind(jobId).all<{ id: number; job_id: string; event_type: string; user_email: string; timestamp: string; details: string | null }>();
 
-        console.log('[Jobs] Found', events.results?.length || 0, 'events');
+        logInfo(`Found ${events.results?.length ?? 0} events`, createErrorContext('jobs', 'get_job_events', {
+          metadata: { jobId, eventCount: events.results?.length ?? 0 }
+        }));
 
         const response: APIResponse = {
           success: true,
@@ -498,9 +527,11 @@ export async function handleImportExportRoutes(
           headers: { 'Content-Type': 'application/json', ...corsHeaders }
         });
       } catch (dbError) {
-        console.error('[Jobs] Database error while fetching job events:', dbError);
+        await logError(env, dbError instanceof Error ? dbError : String(dbError), createErrorContext('jobs', 'get_job_events', {
+          metadata: { jobId }
+        }), isLocalDev);
         const errorMessage = dbError instanceof Error ? dbError.message : 'Database query failed';
-        return new Response(JSON.stringify({ 
+        return new Response(JSON.stringify({
           error: 'Database error',
           message: errorMessage
         }), {
@@ -516,14 +547,9 @@ export async function handleImportExportRoutes(
       headers: { 'Content-Type': 'application/json', ...corsHeaders }
     });
   } catch (error) {
-    console.error('[ImportExport] Error:', error);
-    // Log detailed error information but don't expose to users
-    if (error instanceof Error) {
-      console.error('[ImportExport] Error message:', error.message);
-      console.error('[ImportExport] Error stack:', error.stack);
-    }
+    await logError(env, error instanceof Error ? error : String(error), createErrorContext('import_export', 'handle_request'), isLocalDev);
     return new Response(
-      JSON.stringify({ 
+      JSON.stringify({
         error: 'Internal Server Error'
       }),
       {

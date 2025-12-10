@@ -1,17 +1,16 @@
 import type { DurableObjectState } from '@cloudflare/workers-types';
 import type { Env, JobProgress, ImportParams, ExportParams, R2BackupParams, R2RestoreParams, BatchR2BackupParams, BatchR2RestoreParams } from '../types';
 import { createCfApiRequest, getD1Binding, auditLog, logJobEvent } from '../utils/helpers';
+import { logInfo, logWarning, logError, createErrorContext } from '../utils/error-logger';
 
 /**
  * Durable Object for handling large import/export operations
  */
 export class ImportExportDO {
-  private state: DurableObjectState;
   private env: Env;
   private exportResults: Map<string, string>; // Store export results temporarily
 
-  constructor(state: DurableObjectState, env: Env) {
-    this.state = state;
+  constructor(_state: DurableObjectState, env: Env) {
     this.env = env;
     this.exportResults = new Map();
   }
@@ -25,61 +24,67 @@ export class ImportExportDO {
     // Job processing endpoints
     if (url.pathname.startsWith('/process/')) {
       const jobType = url.pathname.split('/')[2];
-      console.log('[ImportExportDO] Received processing request for job type:', jobType);
-      
+      logInfo(`Received processing request for job type: ${jobType}`, createErrorContext('import_export_do', 'fetch', {
+        metadata: { jobType }
+      }));
+
       try {
         const contentType = request.headers.get('Content-Type');
         let body: unknown;
-        
+
         if (contentType?.includes('application/json')) {
           body = await request.json();
-          console.log('[ImportExportDO] Processing job with params:', JSON.stringify(body));
+          logInfo('Processing job with params', createErrorContext('import_export_do', 'fetch', {
+            metadata: { params: body }
+          }));
         } else {
           // For imports with raw data
           const text = await request.text();
           body = { data: text };
         }
-        
+
         switch (jobType) {
           case 'import':
-            console.log('[ImportExportDO] Starting import process');
+            logInfo('Starting import process', createErrorContext('import_export_do', 'process_import'));
             await this.processImport(body as ImportParams & { jobId: string });
             break;
           case 'export':
-            console.log('[ImportExportDO] Starting export process');
+            logInfo('Starting export process', createErrorContext('import_export_do', 'process_export'));
             await this.processExport(body as ExportParams & { jobId: string });
             break;
           case 'r2-backup':
-            console.log('[ImportExportDO] Starting R2 backup process');
+            logInfo('Starting R2 backup process', createErrorContext('import_export_do', 'process_r2_backup'));
             await this.processR2Backup(body as R2BackupParams & { jobId: string });
             break;
           case 'r2-restore':
-            console.log('[ImportExportDO] Starting R2 restore process');
+            logInfo('Starting R2 restore process', createErrorContext('import_export_do', 'process_r2_restore'));
             await this.processR2Restore(body as R2RestoreParams & { jobId: string });
             break;
           case 'batch-r2-backup':
-            console.log('[ImportExportDO] Starting batch R2 backup process');
+            logInfo('Starting batch R2 backup process', createErrorContext('import_export_do', 'process_batch_r2_backup'));
             await this.processBatchR2Backup(body as BatchR2BackupParams & { jobId: string });
             break;
           case 'batch-r2-restore':
-            console.log('[ImportExportDO] Starting batch R2 restore process');
+            logInfo('Starting batch R2 restore process', createErrorContext('import_export_do', 'process_batch_r2_restore'));
             await this.processBatchR2Restore(body as BatchR2RestoreParams & { jobId: string });
             break;
           default:
-            console.log('[ImportExportDO] Unknown job type:', jobType);
+            logWarning(`Unknown job type: ${jobType}`, createErrorContext('import_export_do', 'fetch', {
+              metadata: { jobType }
+            }));
             return new Response(JSON.stringify({ error: 'Unknown job type' }), {
               status: 400,
               headers: { 'Content-Type': 'application/json' }
             });
         }
-        
+
         return new Response(JSON.stringify({ success: true }), {
           headers: { 'Content-Type': 'application/json' }
         });
       } catch (error) {
-        console.error('[ImportExportDO] Processing error:', error);
-        return new Response(JSON.stringify({ 
-          error: error instanceof Error ? error.message : 'Unknown error' 
+        await logError(this.env, error instanceof Error ? error : String(error), createErrorContext('import_export_do', 'fetch'), false);
+        return new Response(JSON.stringify({
+          error: error instanceof Error ? error.message : 'Unknown error'
         }), {
           status: 500,
           headers: { 'Content-Type': 'application/json' }
@@ -89,9 +94,16 @@ export class ImportExportDO {
 
     // Download export result
     if (url.pathname.startsWith('/download/')) {
-      const jobId = url.pathname.split('/')[2];
+      const pathParts = url.pathname.split('/');
+      const jobId = pathParts[2];
+      if (!jobId) {
+        return new Response(JSON.stringify({ error: 'Invalid job ID' }), {
+          status: 400,
+          headers: { 'Content-Type': 'application/json' }
+        });
+      }
       const exportData = this.exportResults.get(jobId);
-      
+
       if (!exportData) {
         return new Response(JSON.stringify({ error: 'Export data not found or expired' }), {
           status: 404,
@@ -101,7 +113,7 @@ export class ImportExportDO {
 
       // Return the export data and clean up
       this.exportResults.delete(jobId);
-      
+
       const format = exportData.startsWith('[') ? 'json' : 'ndjson';
       return new Response(exportData, {
         headers: {
@@ -120,7 +132,7 @@ export class ImportExportDO {
   /**
    * Broadcast progress (no-op: WebSocket support removed, progress tracked via D1 polling)
    */
-   
+
   private broadcastProgress(_progress: JobProgress): void {
     // No-op: Frontend uses HTTP polling instead of WebSockets
     // This method is kept to avoid refactoring all process methods
@@ -130,7 +142,7 @@ export class ImportExportDO {
    * Update job status in D1
    */
   private async updateJobInDB(
-    jobId: string, 
+    jobId: string,
     updates: {
       status?: string;
       total_keys?: number;
@@ -183,7 +195,9 @@ export class ImportExportDO {
         WHERE job_id = ?
       `).bind(...values).run();
     } catch (error) {
-      console.error('[ImportExportDO] DB update error:', error);
+      logWarning('DB update error', createErrorContext('import_export_do', 'update_job_db', {
+        metadata: { jobId, error: error instanceof Error ? error.message : String(error) }
+      }));
     }
   }
 
@@ -218,7 +232,7 @@ export class ImportExportDO {
       // Process imports using bulk write API (supports metadata)
       // Batch size of 10,000 is KV API limit
       const batchSize = 100;
-      
+
       for (let i = 0; i < importData.length; i += batchSize) {
         const batch = importData.slice(i, i + batchSize);
 
@@ -242,7 +256,10 @@ export class ImportExportDO {
                 }
               }
             } catch (err) {
-              console.error('[ImportExportDO] Collision check error for key:', item.name, err);
+              logWarning(`Collision check error for key: ${item.name}`, createErrorContext('import_export_do', 'process_import', {
+                keyName: item.name,
+                metadata: { error: err instanceof Error ? err.message : String(err) }
+              }));
               if (collision === 'fail') {
                 throw err;
               }
@@ -256,7 +273,7 @@ export class ImportExportDO {
           .map(item => {
             // Support both 'ttl' and 'expiration_ttl' field names
             const ttlValue = item.ttl || item.expiration_ttl;
-            
+
             const kvItem: {
               key: string;
               value: string;
@@ -318,7 +335,11 @@ export class ImportExportDO {
 
                     // Log what we're storing for debugging
                     if (tagsValue || customMetadataValue) {
-                      console.log(`[ImportExportDO] Storing D1 metadata for ${item.name}: tags=${tagsValue !== null}, custom_metadata=${customMetadataValue !== null}`);
+                      logInfo(`Storing D1 metadata for ${item.name}`, createErrorContext('import_export_do', 'process_import', {
+                        keyName: item.name,
+                        namespaceId,
+                        metadata: { hasTags: tagsValue !== null, hasCustomMetadata: customMetadataValue !== null }
+                      }));
                     }
 
                     await db.prepare(`
@@ -336,7 +357,11 @@ export class ImportExportDO {
                       customMetadataValue
                     ).run();
                   } catch (dbErr) {
-                    console.error('[ImportExportDO] Failed to store D1 metadata for key:', item.name, dbErr);
+                    logWarning(`Failed to store D1 metadata for key: ${item.name}`, createErrorContext('import_export_do', 'process_import', {
+                      keyName: item.name,
+                      namespaceId,
+                      metadata: { error: dbErr instanceof Error ? dbErr.message : String(dbErr) }
+                    }));
                     // Don't fail the import if D1 metadata storage fails
                   }
                 }
@@ -349,7 +374,7 @@ export class ImportExportDO {
           } catch (err) {
             console.error('[ImportExportDO] Bulk write error:', err);
             errorCount += bulkData.length;
-            
+
             if (collision === 'fail') {
               throw err;
             }
@@ -358,7 +383,7 @@ export class ImportExportDO {
 
         // Broadcast progress after each batch
         const percentage = Math.round(((i + batch.length) / importData.length) * 100);
-        await this.updateJobInDB(jobId, { 
+        await this.updateJobInDB(jobId, {
           processed_keys: i + batch.length,
           error_count: errorCount,
           percentage
@@ -366,11 +391,11 @@ export class ImportExportDO {
         this.broadcastProgress({
           jobId,
           status: 'running',
-          progress: { 
-            total: importData.length, 
-            processed: i + batch.length, 
+          progress: {
+            total: importData.length,
+            processed: i + batch.length,
             errors: errorCount,
-            percentage 
+            percentage
           }
         });
 
@@ -388,7 +413,7 @@ export class ImportExportDO {
       }
 
       // Mark as completed
-      await this.updateJobInDB(jobId, { 
+      await this.updateJobInDB(jobId, {
         status: 'completed',
         processed_keys: processedCount,
         error_count: errorCount,
@@ -398,16 +423,16 @@ export class ImportExportDO {
       this.broadcastProgress({
         jobId,
         status: 'completed',
-        progress: { 
-          total: importData.length, 
-          processed: processedCount, 
+        progress: {
+          total: importData.length,
+          processed: processedCount,
           errors: errorCount,
-          percentage: 100 
+          percentage: 100
         },
-        result: { 
-          processed: processedCount, 
+        result: {
+          processed: processedCount,
           errors: errorCount,
-          skipped: skippedCount 
+          skipped: skippedCount
         }
       });
 
@@ -424,7 +449,7 @@ export class ImportExportDO {
         namespace_id: namespaceId,
         operation: 'import',
         user_email: userEmail,
-        details: JSON.stringify({ 
+        details: JSON.stringify({
           total: importData.length,
           processed: processedCount,
           errors: errorCount,
@@ -435,10 +460,13 @@ export class ImportExportDO {
       });
 
     } catch (error) {
-      console.error('[ImportExportDO] Import error:', error);
-      
+      await logError(this.env, error instanceof Error ? error : String(error), createErrorContext('import_export_do', 'process_import', {
+        namespaceId,
+        metadata: { jobId }
+      }), false);
+
       await this.updateJobInDB(jobId, { status: 'failed' });
-      
+
       this.broadcastProgress({
         jobId,
         status: 'failed',
@@ -463,10 +491,15 @@ export class ImportExportDO {
     const { jobId, namespaceId, format, userEmail } = params;
     const db = getD1Binding(this.env);
 
-    console.log('[ImportExportDO] Starting export processing for job:', jobId, 'namespace:', namespaceId, 'format:', format);
+    logInfo('Starting export processing', createErrorContext('import_export_do', 'process_export', {
+      namespaceId,
+      metadata: { jobId, format }
+    }));
 
     try {
-      console.log('[ImportExportDO] Updating job status to running:', jobId);
+      logInfo('Updating job status to running', createErrorContext('import_export_do', 'process_export', {
+        metadata: { jobId }
+      }));
       await this.updateJobInDB(jobId, { status: 'running', processed_keys: 0, error_count: 0 });
       this.broadcastProgress({
         jobId,
@@ -475,7 +508,9 @@ export class ImportExportDO {
       });
 
       // Log started event
-      console.log('[ImportExportDO] Logging started event for job:', jobId);
+      logInfo('Logging started event', createErrorContext('import_export_do', 'process_export', {
+        metadata: { jobId }
+      }));
       await logJobEvent(db, {
         job_id: jobId,
         event_type: 'started',
@@ -486,7 +521,7 @@ export class ImportExportDO {
       // List all keys in namespace
       let allKeys: { name: string }[] = [];
       let cursor: string | undefined;
-      
+
       do {
         const params = new URLSearchParams();
         params.set('limit', '1000');
@@ -497,16 +532,16 @@ export class ImportExportDO {
           this.env
         );
         const listResponse = await fetch(listRequest);
-        
+
         if (!listResponse.ok) {
           throw new Error(`Failed to list keys: ${listResponse.status}`);
         }
 
-        const listData = await listResponse.json() as { 
+        const listData = await listResponse.json() as {
           result: { name: string }[];
           result_info: { cursor?: string };
         };
-        
+
         allKeys = allKeys.concat(listData.result || []);
         cursor = listData.result_info?.cursor;
 
@@ -515,24 +550,27 @@ export class ImportExportDO {
         this.broadcastProgress({
           jobId,
           status: 'running',
-          progress: { 
-            total: allKeys.length, 
-            processed: 0, 
+          progress: {
+            total: allKeys.length,
+            processed: 0,
             errors: 0,
-            percentage 
+            percentage
           }
         });
       } while (cursor);
 
-      console.log('[ImportExportDO] Found', allKeys.length, 'keys to export');
+      logInfo(`Found ${allKeys.length} keys to export`, createErrorContext('import_export_do', 'process_export', {
+        namespaceId,
+        metadata: { keyCount: allKeys.length }
+      }));
 
       // Update total count and status to running
-      await this.updateJobInDB(jobId, { 
+      await this.updateJobInDB(jobId, {
         status: 'running',
         total_keys: allKeys.length,
-        processed_keys: 0, 
-        error_count: 0, 
-        percentage: 10 
+        processed_keys: 0,
+        error_count: 0,
+        percentage: 10
       });
       this.broadcastProgress({
         jobId,
@@ -547,14 +585,15 @@ export class ImportExportDO {
 
       for (let i = 0; i < allKeys.length; i++) {
         const key = allKeys[i];
-        
+        if (!key) continue;
+
         try {
           const valueRequest = createCfApiRequest(
             `/accounts/${this.env.ACCOUNT_ID}/storage/kv/namespaces/${namespaceId}/values/${encodeURIComponent(key.name)}`,
             this.env
           );
           const valueResponse = await fetch(valueRequest);
-          
+
           if (valueResponse.ok) {
             const value = await valueResponse.text();
             exportData.push({
@@ -574,21 +613,21 @@ export class ImportExportDO {
         if ((i + 1) % 10 === 0 || i === allKeys.length - 1) {
           // 10% for listing, 90% for fetching values
           const percentage = 10 + Math.round(((i + 1) / allKeys.length) * 90);
-          await this.updateJobInDB(jobId, { 
+          await this.updateJobInDB(jobId, {
             processed_keys: i + 1,
             error_count: errorCount,
-            current_key: key.name,
+            ...(key ? { current_key: key.name } : {}),
             percentage
           });
           this.broadcastProgress({
             jobId,
             status: 'running',
-            progress: { 
-              total: allKeys.length, 
-              processed: i + 1, 
+            progress: {
+              total: allKeys.length,
+              processed: i + 1,
               errors: errorCount,
-              currentKey: key.name,
-              percentage 
+              ...(key ? { currentKey: key.name } : {}),
+              percentage
             }
           });
 
@@ -615,7 +654,7 @@ export class ImportExportDO {
       this.exportResults.set(jobId, responseBody);
 
       // Mark as completed
-      await this.updateJobInDB(jobId, { 
+      await this.updateJobInDB(jobId, {
         status: 'completed',
         processed_keys: exportData.length,
         error_count: errorCount,
@@ -625,14 +664,14 @@ export class ImportExportDO {
       this.broadcastProgress({
         jobId,
         status: 'completed',
-        progress: { 
-          total: allKeys.length, 
-          processed: exportData.length, 
+        progress: {
+          total: allKeys.length,
+          processed: exportData.length,
           errors: errorCount,
-          percentage: 100 
+          percentage: 100
         },
-        result: { 
-          processed: exportData.length, 
+        result: {
+          processed: exportData.length,
           errors: errorCount,
           downloadUrl: `/api/jobs/${jobId}/download`,
           format
@@ -652,7 +691,7 @@ export class ImportExportDO {
         namespace_id: namespaceId,
         operation: 'export',
         user_email: userEmail,
-        details: JSON.stringify({ 
+        details: JSON.stringify({
           format,
           key_count: exportData.length,
           errors: errorCount,
@@ -661,10 +700,13 @@ export class ImportExportDO {
       });
 
     } catch (error) {
-      console.error('[ImportExportDO] Export error:', error);
-      
+      await logError(this.env, error instanceof Error ? error : String(error), createErrorContext('import_export_do', 'process_export', {
+        namespaceId,
+        metadata: { jobId }
+      }), false);
+
       await this.updateJobInDB(jobId, { status: 'failed' });
-      
+
       this.broadcastProgress({
         jobId,
         status: 'failed',
@@ -689,10 +731,15 @@ export class ImportExportDO {
     const { jobId, namespaceId, format, userEmail } = params;
     const db = getD1Binding(this.env);
 
-    console.log('[ImportExportDO] Starting R2 backup processing for job:', jobId, 'namespace:', namespaceId, 'format:', format);
+    logInfo('Starting R2 backup processing', createErrorContext('import_export_do', 'process_r2_backup', {
+      namespaceId,
+      metadata: { jobId, format }
+    }));
 
     try {
-      console.log('[ImportExportDO] Updating job status to running:', jobId);
+      logInfo('Updating job status to running', createErrorContext('import_export_do', 'process_r2_backup', {
+        metadata: { jobId }
+      }));
       await this.updateJobInDB(jobId, { status: 'running', processed_keys: 0, error_count: 0 });
       this.broadcastProgress({
         jobId,
@@ -701,7 +748,9 @@ export class ImportExportDO {
       });
 
       // Log started event
-      console.log('[ImportExportDO] Logging started event for job:', jobId);
+      logInfo('Logging started event', createErrorContext('import_export_do', 'process_r2_backup', {
+        metadata: { jobId }
+      }));
       await logJobEvent(db, {
         job_id: jobId,
         event_type: 'started',
@@ -712,7 +761,7 @@ export class ImportExportDO {
       // List all keys in namespace (same as export)
       let allKeys: { name: string }[] = [];
       let cursor: string | undefined;
-      
+
       do {
         const params = new URLSearchParams();
         params.set('limit', '1000');
@@ -723,16 +772,16 @@ export class ImportExportDO {
           this.env
         );
         const listResponse = await fetch(listRequest);
-        
+
         if (!listResponse.ok) {
           throw new Error(`Failed to list keys: ${listResponse.status}`);
         }
 
-        const listData = await listResponse.json() as { 
+        const listData = await listResponse.json() as {
           result: { name: string }[];
           result_info: { cursor?: string };
         };
-        
+
         allKeys = allKeys.concat(listData.result || []);
         cursor = listData.result_info?.cursor;
 
@@ -741,24 +790,27 @@ export class ImportExportDO {
         this.broadcastProgress({
           jobId,
           status: 'running',
-          progress: { 
-            total: allKeys.length, 
-            processed: 0, 
+          progress: {
+            total: allKeys.length,
+            processed: 0,
             errors: 0,
-            percentage 
+            percentage
           }
         });
       } while (cursor);
 
-      console.log('[ImportExportDO] Found', allKeys.length, 'keys to backup');
+      logInfo(`Found ${allKeys.length} keys to backup`, createErrorContext('import_export', 'r2_backup', {
+        namespaceId,
+        metadata: { keyCount: allKeys.length }
+      }));
 
       // Update total count and status to running
-      await this.updateJobInDB(jobId, { 
+      await this.updateJobInDB(jobId, {
         status: 'running',
         total_keys: allKeys.length,
-        processed_keys: 0, 
-        error_count: 0, 
-        percentage: 10 
+        processed_keys: 0,
+        error_count: 0,
+        percentage: 10
       });
       this.broadcastProgress({
         jobId,
@@ -773,14 +825,15 @@ export class ImportExportDO {
 
       for (let i = 0; i < allKeys.length; i++) {
         const key = allKeys[i];
-        
+        if (!key) continue;
+
         try {
           const valueRequest = createCfApiRequest(
             `/accounts/${this.env.ACCOUNT_ID}/storage/kv/namespaces/${namespaceId}/values/${encodeURIComponent(key.name)}`,
             this.env
           );
           const valueResponse = await fetch(valueRequest);
-          
+
           if (valueResponse.ok) {
             const value = await valueResponse.text();
             exportData.push({
@@ -800,21 +853,21 @@ export class ImportExportDO {
         if ((i + 1) % 10 === 0 || i === allKeys.length - 1) {
           // 10% for listing, 90% for fetching values
           const percentage = 10 + Math.round(((i + 1) / allKeys.length) * 90);
-          await this.updateJobInDB(jobId, { 
+          await this.updateJobInDB(jobId, {
             processed_keys: i + 1,
             error_count: errorCount,
-            current_key: key.name,
+            ...(key ? { current_key: key.name } : {}),
             percentage
           });
           this.broadcastProgress({
             jobId,
             status: 'running',
-            progress: { 
-              total: allKeys.length, 
-              processed: i + 1, 
+            progress: {
+              total: allKeys.length,
+              processed: i + 1,
               errors: errorCount,
-              currentKey: key.name,
-              percentage 
+              ...(key ? { currentKey: key.name } : {}),
+              percentage
             }
           });
 
@@ -842,19 +895,25 @@ export class ImportExportDO {
         const timestamp = Date.now();
         const extension = format === 'ndjson' ? 'ndjson' : 'json';
         const backupPath = `backups/${namespaceId}/${timestamp}.${extension}`;
-        
-        console.log('[ImportExportDO] Storing backup to R2:', backupPath);
-        
+
+        logInfo(`Storing backup to R2: ${backupPath}`, createErrorContext('import_export', 'r2_backup', {
+          namespaceId,
+          metadata: { backupPath }
+        }));
+
         await this.env.BACKUP_BUCKET.put(backupPath, responseBody, {
-          httpMetadata: { 
+          httpMetadata: {
             contentType: format === 'ndjson' ? 'application/x-ndjson' : 'application/json'
           }
         });
 
-        console.log('[ImportExportDO] Backup stored successfully in R2');
+        logInfo('Backup stored successfully in R2', createErrorContext('import_export', 'r2_backup', {
+          namespaceId,
+          metadata: { backupPath }
+        }));
 
         // Mark as completed
-        await this.updateJobInDB(jobId, { 
+        await this.updateJobInDB(jobId, {
           status: 'completed',
           processed_keys: exportData.length,
           error_count: errorCount,
@@ -864,14 +923,14 @@ export class ImportExportDO {
         this.broadcastProgress({
           jobId,
           status: 'completed',
-          progress: { 
-            total: allKeys.length, 
-            processed: exportData.length, 
+          progress: {
+            total: allKeys.length,
+            processed: exportData.length,
             errors: errorCount,
-            percentage: 100 
+            percentage: 100
           },
-          result: { 
-            processed: exportData.length, 
+          result: {
+            processed: exportData.length,
             errors: errorCount,
             backup_path: backupPath,
             format
@@ -891,7 +950,7 @@ export class ImportExportDO {
           namespace_id: namespaceId,
           operation: 'r2_backup',
           user_email: userEmail,
-          details: JSON.stringify({ 
+          details: JSON.stringify({
             format,
             key_count: exportData.length,
             errors: errorCount,
@@ -905,9 +964,9 @@ export class ImportExportDO {
 
     } catch (error) {
       console.error('[ImportExportDO] R2 backup error:', error);
-      
+
       await this.updateJobInDB(jobId, { status: 'failed' });
-      
+
       this.broadcastProgress({
         jobId,
         status: 'failed',
@@ -932,7 +991,10 @@ export class ImportExportDO {
     const { jobId, namespaceId, backupPath, userEmail } = params;
     const db = getD1Binding(this.env);
 
-    console.log('[ImportExportDO] Starting R2 restore processing for job:', jobId, 'from:', backupPath);
+    logInfo(`Starting R2 restore processing for job: ${jobId} from: ${backupPath}`, createErrorContext('import_export', 'r2_restore', {
+      namespaceId,
+      metadata: { jobId, backupPath }
+    }));
 
     try {
       // Fetch backup data from R2
@@ -940,20 +1002,26 @@ export class ImportExportDO {
         throw new Error('R2 bucket not configured');
       }
 
-      console.log('[ImportExportDO] Fetching backup from R2:', backupPath);
+      logInfo(`Fetching backup from R2: ${backupPath}`, createErrorContext('import_export', 'r2_restore', {
+        namespaceId,
+        metadata: { backupPath }
+      }));
       const backupObject = await this.env.BACKUP_BUCKET.get(backupPath);
-      
+
       if (!backupObject) {
         throw new Error('Backup not found in R2');
       }
 
       const backupData = await backupObject.text();
-      console.log('[ImportExportDO] Backup data fetched, size:', backupData.length);
+      logInfo(`Backup data fetched, size: ${backupData.length}`, createErrorContext('import_export', 'r2_restore', {
+        namespaceId,
+        metadata: { backupPath, dataSize: backupData.length }
+      }));
 
       // Parse import data (auto-detect JSON vs NDJSON)
-      let importData: { 
-        name: string; 
-        value: string; 
+      let importData: {
+        name: string;
+        value: string;
         metadata?: Record<string, unknown>;
         custom_metadata?: Record<string, unknown>;
         tags?: string[];
@@ -961,7 +1029,7 @@ export class ImportExportDO {
         ttl?: number;
         expiration?: number;
       }[];
-      
+
       try {
         // Try JSON array first
         importData = JSON.parse(backupData);
@@ -975,7 +1043,10 @@ export class ImportExportDO {
           .map(line => JSON.parse(line));
       }
 
-      console.log('[ImportExportDO] Parsed', importData.length, 'items from backup');
+      logInfo(`Parsed ${importData.length} items from backup`, createErrorContext('import_export', 'r2_restore', {
+        namespaceId,
+        metadata: { itemCount: importData.length }
+      }));
 
       // Now process as import with overwrite collision handling
       await this.updateJobInDB(jobId, { status: 'running', processed_keys: 0, error_count: 0, total_keys: importData.length });
@@ -999,14 +1070,14 @@ export class ImportExportDO {
 
       // Process imports using bulk write API (same as import)
       const batchSize = 100;
-      
+
       for (let i = 0; i < importData.length; i += batchSize) {
         const batch = importData.slice(i, i + batchSize);
 
         // Prepare bulk write data
         const bulkData = batch.map(item => {
           const ttlValue = item.ttl || item.expiration_ttl;
-          
+
           const kvItem: {
             key: string;
             value: string;
@@ -1091,7 +1162,7 @@ export class ImportExportDO {
 
         // Broadcast progress after each batch
         const percentage = Math.round(((i + batch.length) / importData.length) * 100);
-        await this.updateJobInDB(jobId, { 
+        await this.updateJobInDB(jobId, {
           processed_keys: i + batch.length,
           error_count: errorCount,
           percentage
@@ -1099,11 +1170,11 @@ export class ImportExportDO {
         this.broadcastProgress({
           jobId,
           status: 'running',
-          progress: { 
-            total: importData.length, 
-            processed: i + batch.length, 
+          progress: {
+            total: importData.length,
+            processed: i + batch.length,
             errors: errorCount,
-            percentage 
+            percentage
           }
         });
 
@@ -1121,7 +1192,7 @@ export class ImportExportDO {
       }
 
       // Mark as completed
-      await this.updateJobInDB(jobId, { 
+      await this.updateJobInDB(jobId, {
         status: 'completed',
         processed_keys: processedCount,
         error_count: errorCount,
@@ -1131,14 +1202,14 @@ export class ImportExportDO {
       this.broadcastProgress({
         jobId,
         status: 'completed',
-        progress: { 
-          total: importData.length, 
-          processed: processedCount, 
+        progress: {
+          total: importData.length,
+          processed: processedCount,
           errors: errorCount,
-          percentage: 100 
+          percentage: 100
         },
-        result: { 
-          processed: processedCount, 
+        result: {
+          processed: processedCount,
           errors: errorCount
         }
       });
@@ -1156,7 +1227,7 @@ export class ImportExportDO {
         namespace_id: namespaceId,
         operation: 'r2_restore',
         user_email: userEmail,
-        details: JSON.stringify({ 
+        details: JSON.stringify({
           total: importData.length,
           processed: processedCount,
           errors: errorCount,
@@ -1167,9 +1238,9 @@ export class ImportExportDO {
 
     } catch (error) {
       console.error('[ImportExportDO] R2 restore error:', error);
-      
+
       await this.updateJobInDB(jobId, { status: 'failed' });
-      
+
       this.broadcastProgress({
         jobId,
         status: 'failed',
@@ -1194,14 +1265,16 @@ export class ImportExportDO {
     const { jobId, namespaceIds, format, userEmail } = params;
     const db = getD1Binding(this.env);
 
-    console.log(`[ImportExportDO] Starting batch R2 backup job ${jobId} for ${namespaceIds.length} namespaces`);
+    logInfo(`Starting batch R2 backup job ${jobId} for ${namespaceIds.length} namespaces`, createErrorContext('import_export', 'batch_r2_backup', {
+      metadata: { jobId, namespaceCount: namespaceIds.length }
+    }));
 
     // Update job status to running
     if (db) {
       await db.prepare(
         'UPDATE bulk_jobs SET status = ?, processed_keys = 0, error_count = 0 WHERE job_id = ?'
       ).bind('running', jobId).run();
-      
+
       await logJobEvent(db, {
         job_id: jobId,
         event_type: 'started',
@@ -1220,30 +1293,36 @@ export class ImportExportDO {
     // Process each namespace sequentially
     for (const namespaceId of namespaceIds) {
       try {
-        console.log(`[ImportExportDO] Backing up namespace ${namespaceId} (${processed + 1}/${namespaceIds.length})`);
-        
+        logInfo(`Backing up namespace ${namespaceId} (${processed + 1}/${namespaceIds.length})`, createErrorContext('import_export', 'batch_r2_backup', {
+          namespaceId,
+          metadata: { jobId, progress: `${processed + 1}/${namespaceIds.length}` }
+        }));
+
         // List all keys in the namespace
         let allKeys: { name: string }[] = [];
         let cursor: string | undefined;
-        
+
         do {
-          const url = cursor 
+          const url = cursor
             ? `/accounts/${this.env.ACCOUNT_ID}/storage/kv/namespaces/${namespaceId}/keys?limit=1000&cursor=${cursor}`
             : `/accounts/${this.env.ACCOUNT_ID}/storage/kv/namespaces/${namespaceId}/keys?limit=1000`;
-          
+
           const listRequest = createCfApiRequest(url, this.env);
           const listResponse = await fetch(listRequest);
           const listData = await listResponse.json() as { result: { name: string }[]; result_info?: { cursor?: string } };
-          
+
           allKeys = allKeys.concat(listData.result || []);
           cursor = listData.result_info?.cursor;
         } while (cursor);
 
-        console.log(`[ImportExportDO] Found ${allKeys.length} keys in namespace ${namespaceId}`);
+        logInfo(`Found ${allKeys.length} keys in namespace ${namespaceId}`, createErrorContext('import_export', 'batch_r2_backup', {
+          namespaceId,
+          metadata: { keyCount: allKeys.length }
+        }));
 
         // Fetch all key values
         const exportData: { name: string; value: string; metadata: Record<string, unknown> }[] = [];
-        
+
         for (const key of allKeys) {
           try {
             const valueRequest = createCfApiRequest(
@@ -1251,7 +1330,7 @@ export class ImportExportDO {
               this.env
             );
             const valueResponse = await fetch(valueRequest);
-            
+
             if (valueResponse.ok) {
               const value = await valueResponse.text();
               exportData.push({
@@ -1284,32 +1363,35 @@ export class ImportExportDO {
           }
         });
 
-        console.log(`[ImportExportDO] Backed up namespace ${namespaceId} to ${backupPath}`);
-        
+        logInfo(`Backed up namespace ${namespaceId} to ${backupPath}`, createErrorContext('import_export', 'batch_r2_backup', {
+          namespaceId,
+          metadata: { backupPath, keyCount: exportData.length }
+        }));
+
         // Log audit event for this namespace
         if (db) {
-          await auditLog(db, {
+          const auditEntry: Omit<import('../types').AuditLogEntry, 'id' | 'timestamp'> = {
             namespace_id: namespaceId,
             user_email: userEmail,
             operation: 'batch_r2_backup',
-            key_name: undefined,
-            details: JSON.stringify({ 
+            details: JSON.stringify({
               job_id: jobId,
               backup_path: backupPath,
-              key_count: allKeys.length 
+              key_count: allKeys.length
             })
-          });
+          };
+          await auditLog(db, auditEntry);
         }
 
         processed++;
-        
+
         // Update progress
         const percentage = Math.round((processed / namespaceIds.length) * 100);
         if (db) {
           await db.prepare(
             'UPDATE bulk_jobs SET processed_keys = ?, percentage = ? WHERE job_id = ?'
           ).bind(processed, percentage, jobId).run();
-          
+
           // Log milestone events
           if (percentage === 25 || percentage === 50 || percentage === 75) {
             await logJobEvent(db, {
@@ -1324,7 +1406,7 @@ export class ImportExportDO {
             });
           }
         }
-        
+
       } catch (err) {
         errors++;
         const errorMsg = err instanceof Error ? err.message : 'Unknown error';
@@ -1335,14 +1417,14 @@ export class ImportExportDO {
 
     // Mark job as completed or failed
     const finalStatus = errors === namespaceIds.length ? 'failed' : 'completed';
-    
+
     if (db) {
       await db.prepare(`
         UPDATE bulk_jobs 
         SET status = ?, processed_keys = ?, error_count = ?, percentage = 100, completed_at = CURRENT_TIMESTAMP
         WHERE job_id = ?
       `).bind(finalStatus, processed, errors, jobId).run();
-      
+
       await logJobEvent(db, {
         job_id: jobId,
         event_type: finalStatus as 'completed' | 'failed',
@@ -1357,7 +1439,9 @@ export class ImportExportDO {
       });
     }
 
-    console.log(`[ImportExportDO] Batch R2 backup job ${jobId} ${finalStatus}. Processed: ${processed}, Errors: ${errors}`);
+    logInfo(`Batch R2 backup job ${jobId} ${finalStatus}. Processed: ${processed}, Errors: ${errors}`, createErrorContext('import_export', 'batch_r2_backup', {
+      metadata: { jobId, status: finalStatus, processed, errors }
+    }));
   }
 
   /**
@@ -1368,14 +1452,16 @@ export class ImportExportDO {
     const db = getD1Binding(this.env);
     const namespaceIds = Object.keys(restoreMap);
 
-    console.log(`[ImportExportDO] Starting batch R2 restore job ${jobId} for ${namespaceIds.length} namespaces`);
+    logInfo(`Starting batch R2 restore job ${jobId} for ${namespaceIds.length} namespaces`, createErrorContext('import_export', 'batch_r2_restore', {
+      metadata: { jobId, namespaceCount: namespaceIds.length }
+    }));
 
     // Update job status to running
     if (db) {
       await db.prepare(
         'UPDATE bulk_jobs SET status = ?, processed_keys = 0, error_count = 0 WHERE job_id = ?'
       ).bind('running', jobId).run();
-      
+
       await logJobEvent(db, {
         job_id: jobId,
         event_type: 'started',
@@ -1394,18 +1480,27 @@ export class ImportExportDO {
     // Process each namespace sequentially
     for (const namespaceId of namespaceIds) {
       const backupPath = restoreMap[namespaceId];
-      
+
       try {
-        console.log(`[ImportExportDO] Restoring namespace ${namespaceId} from ${backupPath} (${processed + 1}/${namespaceIds.length})`);
-        
+        logInfo(`Restoring namespace ${namespaceId} from ${backupPath} (${processed + 1}/${namespaceIds.length})`, createErrorContext('import_export', 'batch_r2_restore', {
+          namespaceId,
+          metadata: { jobId, backupPath, progress: `${processed + 1}/${namespaceIds.length}` }
+        }));
+
         // Retrieve backup from R2
-        const backupObject = await this.env.BACKUP_BUCKET?.get(backupPath);
+        if (!this.env.BACKUP_BUCKET) {
+          throw new Error('BACKUP_BUCKET is not configured');
+        }
+        if (!backupPath) {
+          throw new Error('Backup path is undefined');
+        }
+        const backupObject = await this.env.BACKUP_BUCKET.get(backupPath);
         if (!backupObject) {
           throw new Error(`Backup not found: ${backupPath}`);
         }
 
         const backupContent = await backupObject.text();
-        
+
         // Parse backup data (auto-detect format)
         let importData: { name: string; value: string; metadata?: unknown; expiration?: number; expiration_ttl?: number }[];
         try {
@@ -1420,7 +1515,10 @@ export class ImportExportDO {
             .map(line => JSON.parse(line));
         }
 
-        console.log(`[ImportExportDO] Parsed ${importData.length} items from backup`);
+        logInfo(`Parsed ${importData.length} items from backup`, createErrorContext('import_export', 'batch_r2_restore', {
+          namespaceId,
+          metadata: { itemCount: importData.length }
+        }));
 
         // Restore keys to namespace
         let keyErrors = 0;
@@ -1446,22 +1544,25 @@ export class ImportExportDO {
           }
         }
 
-        console.log(`[ImportExportDO] Restored namespace ${namespaceId}. Keys: ${importData.length}, Errors: ${keyErrors}`);
-        
+        logInfo(`Restored namespace ${namespaceId}. Keys: ${importData.length}, Errors: ${keyErrors}`, createErrorContext('import_export', 'batch_r2_restore', {
+          namespaceId,
+          metadata: { keyCount: importData.length, keyErrors }
+        }));
+
         // Log audit event
         if (db) {
-          await auditLog(db, {
+          const auditEntry: Omit<import('../types').AuditLogEntry, 'id' | 'timestamp'> = {
             namespace_id: namespaceId,
             user_email: userEmail,
             operation: 'batch_r2_restore',
-            key_name: undefined,
-            details: JSON.stringify({ 
+            details: JSON.stringify({
               job_id: jobId,
               backup_path: backupPath,
               key_count: importData.length,
               key_errors: keyErrors
             })
-          });
+          };
+          await auditLog(db, auditEntry);
         }
 
         if (keyErrors > 0) {
@@ -1470,14 +1571,14 @@ export class ImportExportDO {
         }
 
         processed++;
-        
+
         // Update progress
         const percentage = Math.round((processed / namespaceIds.length) * 100);
         if (db) {
           await db.prepare(
             'UPDATE bulk_jobs SET processed_keys = ?, error_count = ?, percentage = ? WHERE job_id = ?'
           ).bind(processed, errors, percentage, jobId).run();
-          
+
           // Log milestone events
           if (percentage === 25 || percentage === 50 || percentage === 75) {
             await logJobEvent(db, {
@@ -1493,7 +1594,7 @@ export class ImportExportDO {
             });
           }
         }
-        
+
       } catch (err) {
         errors++;
         const errorMsg = err instanceof Error ? err.message : 'Unknown error';
@@ -1504,14 +1605,14 @@ export class ImportExportDO {
 
     // Mark job as completed or failed
     const finalStatus = errors === namespaceIds.length ? 'failed' : 'completed';
-    
+
     if (db) {
       await db.prepare(`
         UPDATE bulk_jobs 
         SET status = ?, processed_keys = ?, error_count = ?, percentage = 100, completed_at = CURRENT_TIMESTAMP
         WHERE job_id = ?
       `).bind(finalStatus, processed, errors, jobId).run();
-      
+
       await logJobEvent(db, {
         job_id: jobId,
         event_type: finalStatus as 'completed' | 'failed',
@@ -1526,6 +1627,8 @@ export class ImportExportDO {
       });
     }
 
-    console.log(`[ImportExportDO] Batch R2 restore job ${jobId} ${finalStatus}. Processed: ${processed}, Errors: ${errors}`);
+    logInfo(`Batch R2 restore job ${jobId} ${finalStatus}. Processed: ${processed}, Errors: ${errors}`, createErrorContext('import_export', 'batch_r2_restore', {
+      metadata: { jobId, status: finalStatus, processed, errors }
+    }));
   }
 }

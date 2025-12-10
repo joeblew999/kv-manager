@@ -1,5 +1,6 @@
 import type { Env, APIResponse } from '../types';
 import { createCfApiRequest, getD1Binding, auditLog } from '../utils/helpers';
+import { logInfo, logError, createErrorContext } from '../utils/error-logger';
 
 export async function handleBackupRoutes(
   request: Request,
@@ -16,10 +17,26 @@ export async function handleBackupRoutes(
     const checkMatch = url.pathname.match(/^\/api\/backup\/([^/]+)\/(.+)\/check$/);
     if (checkMatch && request.method === 'GET') {
       const namespaceId = checkMatch[1];
-      const keyName = decodeURIComponent(checkMatch[2]);
+      if (!namespaceId) {
+        return new Response(JSON.stringify({ error: 'Invalid namespace ID' }), {
+          status: 400,
+          headers: { 'Content-Type': 'application/json', ...corsHeaders }
+        });
+      }
+      const keyNameEncoded = checkMatch[2];
+      if (!keyNameEncoded) {
+        return new Response(JSON.stringify({ error: 'Invalid key name' }), {
+          status: 400,
+          headers: { 'Content-Type': 'application/json', ...corsHeaders }
+        });
+      }
+      const keyName = decodeURIComponent(keyNameEncoded);
       const backupKey = `__backup__:${keyName}`;
 
-      console.log('[Backup] Checking backup for key:', keyName, 'in namespace:', namespaceId);
+      logInfo('Checking backup for key', createErrorContext('backup', 'check_backup', {
+        ...(namespaceId !== undefined && { namespaceId }),
+        keyName
+      }));
 
       if (isLocalDev) {
         // In local dev, randomly return true/false for demo
@@ -42,7 +59,11 @@ export async function handleBackupRoutes(
       const cfResponse = await fetch(cfRequest);
       const exists = cfResponse.ok;
 
-      console.log('[Backup] Backup exists:', exists);
+      logInfo('Backup check result', createErrorContext('backup', 'check_backup', {
+        ...(namespaceId !== undefined && { namespaceId }),
+        keyName,
+        metadata: { exists }
+      }));
 
       const response: APIResponse = {
         success: true,
@@ -58,10 +79,26 @@ export async function handleBackupRoutes(
     const undoMatch = url.pathname.match(/^\/api\/backup\/([^/]+)\/(.+)\/undo$/);
     if (undoMatch && request.method === 'POST') {
       const namespaceId = undoMatch[1];
-      const keyName = decodeURIComponent(undoMatch[2]);
+      if (!namespaceId) {
+        return new Response(JSON.stringify({ error: 'Invalid namespace ID' }), {
+          status: 400,
+          headers: { 'Content-Type': 'application/json', ...corsHeaders }
+        });
+      }
+      const keyNameEncoded = undoMatch[2];
+      if (!keyNameEncoded) {
+        return new Response(JSON.stringify({ error: 'Invalid key name' }), {
+          status: 400,
+          headers: { 'Content-Type': 'application/json', ...corsHeaders }
+        });
+      }
+      const keyName = decodeURIComponent(keyNameEncoded);
       const backupKey = `__backup__:${keyName}`;
 
-      console.log('[Backup] Restoring backup for key:', keyName, 'in namespace:', namespaceId);
+      logInfo('Restoring backup for key', createErrorContext('backup', 'restore_backup', {
+        ...(namespaceId !== undefined && { namespaceId }),
+        keyName
+      }));
 
       if (isLocalDev) {
         const response: APIResponse = {
@@ -110,7 +147,11 @@ export async function handleBackupRoutes(
 
       if (!restoreResponse.ok) {
         const errorText = await restoreResponse.text();
-        console.error('[Backup] Restore failed:', errorText);
+        await logError(env, `Failed to restore backup: ${restoreResponse.status}`, createErrorContext('backup', 'restore_backup', {
+          ...(namespaceId !== undefined && { namespaceId }),
+          keyName,
+          metadata: { errorText }
+        }), isLocalDev);
         throw new Error(`Failed to restore backup: ${restoreResponse.status}`);
       }
 
@@ -124,14 +165,20 @@ export async function handleBackupRoutes(
       await fetch(deleteBackupRequest);
 
       // Log audit entry
-      await auditLog(db, {
+      const auditEntry: Omit<import('../types').AuditLogEntry, 'id' | 'timestamp'> = {
         namespace_id: namespaceId,
-        key_name: keyName,
         operation: 'restore_backup',
         user_email: userEmail
-      });
+      };
+      if (keyName) {
+        auditEntry.key_name = keyName;
+      }
+      await auditLog(db, auditEntry);
 
-      console.log('[Backup] Restore completed successfully');
+      logInfo('Restore completed successfully', createErrorContext('backup', 'restore_backup', {
+        ...(namespaceId !== undefined && { namespaceId }),
+        keyName
+      }));
 
       const response: APIResponse = {
         success: true
@@ -148,7 +195,7 @@ export async function handleBackupRoutes(
       headers: { 'Content-Type': 'application/json', ...corsHeaders }
     });
   } catch (error) {
-    console.error('[Backup] Error:', error);
+    await logError(env, error instanceof Error ? error : String(error), createErrorContext('backup', 'handle_request'), isLocalDev);
     return new Response(
       JSON.stringify({ error: 'Internal Server Error' }),
       {

@@ -1,8 +1,9 @@
-import React, { useState, useEffect, useCallback } from 'react'
-import { api, type KVNamespace, type KVKey, type JobProgress, type R2BackupListItem } from './services/api'
+import React, { useState, useEffect, useCallback, Suspense, lazy } from 'react'
+import { api, type KVNamespace, type KVKey, type JobProgress, type R2BackupListItem, type MigrationStatus, getMigrationStatus, applyMigrations, markLegacyMigrations } from './services/api'
 import { auth } from './services/auth'
 import { useTheme } from './hooks/useTheme'
-import { Database, Plus, Moon, Sun, Monitor, Loader2, Trash2, Key, Search, History, Download, Upload, Copy, Clock, Tag, RefreshCw } from 'lucide-react'
+import { useNamespaceViewPreference } from './hooks/useNamespaceViewPreference'
+import { Database, Plus, Moon, Sun, Monitor, Loader2, Trash2, Key, Search, History, Download, Upload, Copy, Clock, Tag, RefreshCw, Pencil, ExternalLink, BarChart2, ArrowUpCircle, Check } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Checkbox } from '@/components/ui/checkbox'
 import {
@@ -25,15 +26,22 @@ import { Label } from '@/components/ui/label'
 import { Textarea } from '@/components/ui/textarea'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { KeyEditorDialog } from './components/KeyEditorDialog'
-import { SearchKeys } from './components/SearchKeys'
-import { AuditLog } from './components/AuditLog'
 import { BulkProgressDialog } from './components/BulkProgressDialog'
-import { JobHistory } from './components/JobHistory'
+import { JsonEditor } from './components/ui/JsonEditor'
+import { ViewToggle } from './components/ui/ViewToggle'
+import { NamespaceListRow } from './components/NamespaceListRow'
 
-type View = 
+// Lazy-loaded components for code-splitting (reduces initial bundle by ~70KB)
+const SearchKeys = lazy(() => import('./components/SearchKeys').then(m => ({ default: m.SearchKeys })))
+const AuditLog = lazy(() => import('./components/AuditLog').then(m => ({ default: m.AuditLog })))
+const JobHistory = lazy(() => import('./components/JobHistory').then(m => ({ default: m.JobHistory })))
+const KVMetrics = lazy(() => import('./components/KVMetrics').then(m => ({ default: m.KVMetrics })))
+
+type View =
   | { type: 'list' }
   | { type: 'namespace'; namespaceId: string; namespaceTitle: string }
   | { type: 'search' }
+  | { type: 'metrics' }
   | { type: 'audit'; namespaceId?: string }
   | { type: 'job-history' }
 
@@ -46,16 +54,20 @@ export default function App(): React.JSX.Element {
   const [creating, setCreating] = useState(false)
   const [currentView, setCurrentView] = useState<View>({ type: 'list' })
   const { theme, setTheme } = useTheme()
-  
+  const { viewMode, setViewMode } = useNamespaceViewPreference()
+
   // Rename namespace state
   const [showRenameDialog, setShowRenameDialog] = useState(false)
   const [renameNamespaceId, setRenameNamespaceId] = useState('')
   const [renameTitle, setRenameTitle] = useState('')
   const [renaming, setRenaming] = useState(false)
-  
+
   // Bulk operations state
   const [selectedNamespaces, setSelectedNamespaces] = useState<string[]>([])
-  
+
+  // Namespace filter state
+  const [namespaceFilter, setNamespaceFilter] = useState('')
+
   // Key browser state
   const [keys, setKeys] = useState<KVKey[]>([])
   const [keysLoading, setKeysLoading] = useState(false)
@@ -64,7 +76,7 @@ export default function App(): React.JSX.Element {
   const [deleting, setDeleting] = useState(false)
   const [keysCursor, setKeysCursor] = useState<string | undefined>()
   const [keysListComplete, setKeysListComplete] = useState(true)
-  
+
   // Create key state
   const [showCreateKeyDialog, setShowCreateKeyDialog] = useState(false)
   const [newKeyName, setNewKeyName] = useState('')
@@ -72,9 +84,10 @@ export default function App(): React.JSX.Element {
   const [newKeyTTL, setNewKeyTTL] = useState('')
   const [newKeyMetadata, setNewKeyMetadata] = useState('')
   const [creatingKey, setCreatingKey] = useState(false)
-  
+
   // Edit key state
   const [selectedKeyForEdit, setSelectedKeyForEdit] = useState<string | null>(null)
+  const [editKeyTimestamp, setEditKeyTimestamp] = useState(0) // Timestamp to force dialog refresh
 
   // Import/Export state
   const [showImportDialog, setShowImportDialog] = useState(false)
@@ -112,6 +125,12 @@ export default function App(): React.JSX.Element {
   const [bulkTags, setBulkTags] = useState('')
   const [bulkOperating, setBulkOperating] = useState(false)
 
+  // Rename key state
+  const [showRenameKeyDialog, setShowRenameKeyDialog] = useState(false)
+  const [renameKeyOldName, setRenameKeyOldName] = useState('')
+  const [renameKeyNewName, setRenameKeyNewName] = useState('')
+  const [renamingKey, setRenamingKey] = useState(false)
+
   // Progress dialog state
   const [showProgressDialog, setShowProgressDialog] = useState(false)
   const [progressJobId, setProgressJobId] = useState('')
@@ -119,10 +138,62 @@ export default function App(): React.JSX.Element {
   const [progressOperationName, setProgressOperationName] = useState('')
   const [progressNamespace, setProgressNamespace] = useState('')
 
-  // Load namespaces on mount
+  // Migration state for upgrade banner
+  const [migrationStatus, setMigrationStatus] = useState<MigrationStatus | null>(null)
+  const [migrationLoading, setMigrationLoading] = useState(false)
+  const [migrationError, setMigrationError] = useState<string | null>(null)
+  const [migrationSuccess, setMigrationSuccess] = useState(false)
+
+  // Check migration status and load namespaces on mount
   useEffect(() => {
     loadNamespaces()
+    checkMigrationStatus()
   }, [])
+
+  // Check migration status
+  const checkMigrationStatus = async (): Promise<void> => {
+    try {
+      const status = await getMigrationStatus()
+      setMigrationStatus(status)
+      setMigrationError(null)
+    } catch {
+      // Silently handle migration check failures - don't block the app
+    }
+  }
+
+  // Apply pending migrations
+  const handleApplyMigrations = async (): Promise<void> => {
+    if (!migrationStatus) return
+
+    setMigrationLoading(true)
+    setMigrationError(null)
+    setMigrationSuccess(false)
+
+    try {
+      // Check if this is a legacy installation that needs marking
+      if (migrationStatus.legacy?.isLegacy && migrationStatus.legacy.suggestedVersion > 0) {
+        // Mark existing migrations as applied first
+        await markLegacyMigrations(migrationStatus.legacy.suggestedVersion)
+      }
+
+      // Apply any pending migrations
+      const result = await applyMigrations()
+
+      if (result.success) {
+        setMigrationSuccess(true)
+        // Refresh migration status
+        await checkMigrationStatus()
+        // Auto-hide success message after 5 seconds
+        setTimeout(() => setMigrationSuccess(false), 5000)
+      } else {
+        setMigrationError(result.errors.join(', '))
+      }
+    } catch (err) {
+      setMigrationError(err instanceof Error ? err.message : 'Failed to apply migrations')
+    } finally {
+      setMigrationLoading(false)
+    }
+  }
 
   const loadNamespaces = async (): Promise<void> => {
     try {
@@ -202,10 +273,13 @@ export default function App(): React.JSX.Element {
   }
 
   const cycleTheme = (): void => {
-    const modes: typeof theme[] = ['system', 'light', 'dark']
+    const modes: ('system' | 'light' | 'dark')[] = ['system', 'light', 'dark']
     const currentIndex = modes.indexOf(theme)
     const nextIndex = (currentIndex + 1) % modes.length
-    setTheme(modes[nextIndex])
+    const nextMode = modes[nextIndex]
+    if (nextMode) {
+      setTheme(nextMode)
+    }
   }
 
   const getThemeIcon = (): React.JSX.Element => {
@@ -235,7 +309,7 @@ export default function App(): React.JSX.Element {
 
   const handleBulkDeleteNamespaces = async (): Promise<void> => {
     if (selectedNamespaces.length === 0) return
-    
+
     if (!confirm(`Are you sure you want to delete ${selectedNamespaces.length} namespace(s)? This action cannot be undone.`)) {
       return
     }
@@ -256,10 +330,14 @@ export default function App(): React.JSX.Element {
     try {
       setKeysLoading(true)
       setError('')
-      const response = await api.listKeys(namespaceId, { 
-        prefix: keyPrefix || undefined,
-        cursor: append ? cursor : undefined
-      })
+      const options: { prefix?: string; cursor?: string } = {}
+      if (keyPrefix) {
+        options.prefix = keyPrefix
+      }
+      if (append && cursor) {
+        options.cursor = cursor
+      }
+      const response = await api.listKeys(namespaceId, options)
       setKeys(prev => append ? [...prev, ...response.keys] : response.keys)
       setKeysCursor(response.cursor)
       setKeysListComplete(response.list_complete)
@@ -290,7 +368,7 @@ export default function App(): React.JSX.Element {
     try {
       setCreatingKey(true)
       setError('')
-      
+
       const options: {
         expiration_ttl?: number
         metadata?: unknown
@@ -324,7 +402,7 @@ export default function App(): React.JSX.Element {
       setNewKeyValue('')
       setNewKeyTTL('')
       setNewKeyMetadata('')
-      
+
       // Reset pagination and reload keys
       setKeysCursor(undefined)
       setKeysListComplete(true)
@@ -348,7 +426,7 @@ export default function App(): React.JSX.Element {
 
   const handleBulkDeleteKeys = async (namespaceId: string): Promise<void> => {
     if (selectedKeys.length === 0) return
-    
+
     if (!confirm(`Are you sure you want to delete ${selectedKeys.length} key(s)? This action cannot be undone.`)) {
       return
     }
@@ -356,7 +434,7 @@ export default function App(): React.JSX.Element {
     try {
       setDeleting(true)
       const result = await api.bulkDeleteKeys(namespaceId, selectedKeys)
-      
+
       // Open progress dialog
       setProgressJobId(result.job_id)
       setProgressWsUrl(result.ws_url)
@@ -381,6 +459,33 @@ export default function App(): React.JSX.Element {
     }
   }
 
+  // Rename key handler
+  const handleRenameKey = async (): Promise<void> => {
+    if (!renameKeyNewName.trim() || currentView.type !== 'namespace') return;
+
+    try {
+      setRenamingKey(true);
+      await api.renameKey(currentView.namespaceId, renameKeyOldName, renameKeyNewName.trim());
+      setShowRenameKeyDialog(false);
+      setRenameKeyOldName('');
+      setRenameKeyNewName('');
+      // Refresh keys list
+      setKeysCursor(undefined);
+      setKeysListComplete(true);
+      await loadKeys(currentView.namespaceId, false, undefined);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to rename key');
+    } finally {
+      setRenamingKey(false);
+    }
+  };
+
+  const openRenameKeyDialog = (keyName: string): void => {
+    setRenameKeyOldName(keyName);
+    setRenameKeyNewName(keyName); // Pre-fill with current name
+    setShowRenameKeyDialog(true);
+  };
+
   // Load keys when viewing a namespace
   useEffect(() => {
     if (currentView.type === 'namespace') {
@@ -403,7 +508,7 @@ export default function App(): React.JSX.Element {
       setError('')
       const result = await api.exportNamespace(exportNamespaceId, exportFormat)
       setShowExportDialog(false)
-      
+
       // Open progress dialog with export handler
       setProgressJobId(result.job_id)
       setProgressWsUrl(result.ws_url)
@@ -439,7 +544,7 @@ export default function App(): React.JSX.Element {
       const result = await api.importKeys(importNamespaceId, importData)
       setShowImportDialog(false)
       setImportData('')
-      
+
       // Open progress dialog
       setProgressJobId(result.job_id)
       setProgressWsUrl(result.ws_url)
@@ -480,7 +585,7 @@ export default function App(): React.JSX.Element {
       setError('')
       const result = await api.backupToR2(r2NamespaceId, r2BackupFormat)
       setShowR2BackupDialog(false)
-      
+
       // Open progress dialog
       setProgressJobId(result.job_id)
       setProgressWsUrl(result.ws_url)
@@ -497,13 +602,13 @@ export default function App(): React.JSX.Element {
 
   const handleR2Restore = async (): Promise<void> => {
     if (!selectedR2Backup) return
-    
+
     try {
       setImporting(true)
       setError('')
       const result = await api.restoreFromR2(r2NamespaceId, selectedR2Backup)
       setShowR2RestoreDialog(false)
-      
+
       // Open progress dialog
       setProgressJobId(result.job_id)
       setProgressWsUrl(result.ws_url)
@@ -521,13 +626,13 @@ export default function App(): React.JSX.Element {
   // Batch R2 operations handlers
   const handleBatchR2Backup = async (): Promise<void> => {
     if (selectedNamespaces.length === 0) return
-    
+
     try {
       setExporting(true)
       setError('')
       const result = await api.batchBackupToR2(selectedNamespaces, batchR2BackupFormat)
       setShowBatchR2BackupDialog(false)
-      
+
       // Open progress dialog
       setProgressJobId(result.job_id)
       setProgressWsUrl(result.ws_url)
@@ -543,10 +648,10 @@ export default function App(): React.JSX.Element {
 
   const openBatchR2RestoreDialog = async (): Promise<void> => {
     if (selectedNamespaces.length === 0) return
-    
+
     setLoadingBatchR2Backups(true)
     setShowBatchR2RestoreDialog(true)
-    
+
     // Load backups for all selected namespaces
     const backupsMap = new Map<string, R2BackupListItem[]>()
     try {
@@ -566,21 +671,21 @@ export default function App(): React.JSX.Element {
 
   const handleBatchR2Restore = async (): Promise<void> => {
     if (batchR2RestoreSelections.size === 0) return
-    
+
     try {
       setImporting(true)
       setError('')
-      
+
       // Build restore map from selections
       const restoreMap: Record<string, string> = {}
       batchR2RestoreSelections.forEach((backupPath, namespaceId) => {
         restoreMap[namespaceId] = backupPath
       })
-      
+
       const result = await api.batchRestoreFromR2(restoreMap)
       setShowBatchR2RestoreDialog(false)
       setBatchR2RestoreSelections(new Map())
-      
+
       // Open progress dialog
       setProgressJobId(result.job_id)
       setProgressWsUrl(result.ws_url)
@@ -604,7 +709,7 @@ export default function App(): React.JSX.Element {
       const result = await api.bulkCopyKeys(currentView.namespaceId, selectedKeys, bulkTargetNamespace)
       setShowBulkCopyDialog(false)
       setBulkTargetNamespace('')
-      
+
       // Open progress dialog
       setProgressJobId(result.job_id)
       setProgressWsUrl(result.ws_url)
@@ -633,7 +738,7 @@ export default function App(): React.JSX.Element {
       const result = await api.bulkUpdateTTL(currentView.namespaceId, selectedKeys, ttl)
       setShowBulkTTLDialog(false)
       setBulkTTL('')
-      
+
       // Open progress dialog
       setProgressJobId(result.job_id)
       setProgressWsUrl(result.ws_url)
@@ -657,7 +762,7 @@ export default function App(): React.JSX.Element {
       const result = await api.bulkTagKeys(currentView.namespaceId, selectedKeys, tags)
       setShowBulkTagDialog(false)
       setBulkTags('')
-      
+
       // Open progress dialog
       setProgressJobId(result.job_id)
       setProgressWsUrl(result.ws_url)
@@ -687,7 +792,7 @@ export default function App(): React.JSX.Element {
       <header className="border-b">
         <div className="container mx-auto px-4 py-4">
           <div className="flex items-center justify-between mb-4">
-            <div 
+            <div
               className="flex items-center gap-3 cursor-pointer hover:opacity-80 transition-opacity"
               onClick={() => window.location.reload()}
               title="Refresh page"
@@ -699,6 +804,14 @@ export default function App(): React.JSX.Element {
               </div>
             </div>
             <div className="flex items-center gap-2">
+              <Button
+                variant="ghost"
+                size="icon"
+                onClick={() => window.open('https://dash.cloudflare.com/?to=/:account/workers/kv/namespaces', '_blank')}
+                title="Open Cloudflare KV Dashboard"
+              >
+                <ExternalLink className="h-5 w-5" />
+              </Button>
               <Button
                 variant="ghost"
                 size="icon"
@@ -731,11 +844,11 @@ export default function App(): React.JSX.Element {
                 Search
               </Button>
               <Button
-                variant={currentView.type === 'job-history' ? 'default' : 'ghost'}
-                onClick={() => setCurrentView({ type: 'job-history' })}
+                variant={currentView.type === 'metrics' ? 'default' : 'ghost'}
+                onClick={() => setCurrentView({ type: 'metrics' })}
               >
-                <History className="h-4 w-4 mr-2" />
-                Job History
+                <BarChart2 className="h-4 w-4 mr-2" />
+                Metrics
               </Button>
               <Button
                 variant={currentView.type === 'audit' ? 'default' : 'ghost'}
@@ -744,10 +857,87 @@ export default function App(): React.JSX.Element {
                 <History className="h-4 w-4 mr-2" />
                 Audit Log
               </Button>
+              <Button
+                variant={currentView.type === 'job-history' ? 'default' : 'ghost'}
+                onClick={() => setCurrentView({ type: 'job-history' })}
+              >
+                <History className="h-4 w-4 mr-2" />
+                Job History
+              </Button>
             </div>
           )}
         </div>
       </header>
+
+      {/* Migration Upgrade Banner */}
+      {migrationStatus && !migrationStatus.isUpToDate && (
+        <div
+          className="bg-amber-50 dark:bg-amber-950 border-b border-amber-200 dark:border-amber-800"
+          role="alert"
+          aria-live="polite"
+        >
+          <div className="container mx-auto px-4 py-3">
+            <div className="flex items-center justify-between gap-4">
+              <div className="flex items-center gap-3">
+                <ArrowUpCircle className="h-5 w-5 text-amber-600 dark:text-amber-400 flex-shrink-0" aria-hidden="true" />
+                <div>
+                  <p className="text-sm font-medium text-amber-800 dark:text-amber-200">
+                    Database upgrade available
+                  </p>
+                  <p className="text-xs text-amber-700 dark:text-amber-300">
+                    {migrationStatus.pendingMigrations.length} migration{migrationStatus.pendingMigrations.length !== 1 ? 's' : ''} pending
+                    {migrationStatus.legacy?.isLegacy && ' (legacy installation detected)'}
+                  </p>
+                </div>
+              </div>
+              <div className="flex items-center gap-2">
+                {migrationError && (
+                  <span className="text-xs text-red-600 dark:text-red-400 max-w-xs truncate" title={migrationError}>
+                    {migrationError}
+                  </span>
+                )}
+                <Button
+                  size="sm"
+                  onClick={() => void handleApplyMigrations()}
+                  disabled={migrationLoading}
+                  className="bg-amber-600 hover:bg-amber-700 text-white"
+                  aria-label={migrationLoading ? 'Upgrading database' : 'Upgrade database now'}
+                >
+                  {migrationLoading ? (
+                    <>
+                      <Loader2 className="h-4 w-4 mr-2 animate-spin" aria-hidden="true" />
+                      Upgrading...
+                    </>
+                  ) : (
+                    <>
+                      <ArrowUpCircle className="h-4 w-4 mr-2" aria-hidden="true" />
+                      Upgrade Now
+                    </>
+                  )}
+                </Button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Migration Success Banner */}
+      {migrationSuccess && (
+        <div
+          className="bg-green-50 dark:bg-green-950 border-b border-green-200 dark:border-green-800"
+          role="status"
+          aria-live="polite"
+        >
+          <div className="container mx-auto px-4 py-3">
+            <div className="flex items-center gap-3">
+              <Check className="h-5 w-5 text-green-600 dark:text-green-400" aria-hidden="true" />
+              <p className="text-sm font-medium text-green-800 dark:text-green-200">
+                Database upgraded successfully! All migrations have been applied.
+              </p>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* Main Content */}
       <main className="container mx-auto px-4 py-8">
@@ -758,7 +948,10 @@ export default function App(): React.JSX.Element {
               <div>
                 <h2 className="text-3xl font-bold">Namespaces</h2>
                 <p className="text-muted-foreground mt-1">
-                  {namespaces.length} {namespaces.length === 1 ? 'namespace' : 'namespaces'}
+                  {namespaceFilter
+                    ? `${namespaces.filter(ns => ns.title.toLowerCase().includes(namespaceFilter.toLowerCase())).length} of ${namespaces.length} namespaces`
+                    : `${namespaces.length} ${namespaces.length === 1 ? 'namespace' : 'namespaces'}`
+                  }
                 </p>
               </div>
               <Button onClick={() => setShowCreateDialog(true)}>
@@ -766,6 +959,38 @@ export default function App(): React.JSX.Element {
                 Create Namespace
               </Button>
             </div>
+
+            {/* Namespace Filter Bar */}
+            {!loading && namespaces.length > 0 && (
+              <div className="flex items-center gap-4 mb-6">
+                <div className="flex-1">
+                  <div className="relative">
+                    <Search className="absolute left-3 top-1/2 transform -translate-y-1/2 h-4 w-4 text-muted-foreground" />
+                    <Input
+                      id="namespace-name-filter"
+                      name="namespace-filter"
+                      placeholder="Filter namespaces by name..."
+                      value={namespaceFilter}
+                      onChange={(e) => setNamespaceFilter(e.target.value)}
+                      className="pl-10"
+                      aria-label="Filter namespaces by name"
+                      autoComplete="off"
+                    />
+                  </div>
+                </div>
+                {/* View Toggle */}
+                <div className="flex items-center gap-2">
+                  <span id="namespace-view-mode-label" className="text-sm text-muted-foreground sr-only">
+                    View mode
+                  </span>
+                  <ViewToggle
+                    viewMode={viewMode}
+                    onViewModeChange={setViewMode}
+                    ariaLabelledBy="namespace-view-mode-label"
+                  />
+                </div>
+              </div>
+            )}
 
             {/* Error Message */}
             {error && (
@@ -781,7 +1006,7 @@ export default function App(): React.JSX.Element {
               </div>
             )}
 
-            {/* Empty State */}
+            {/* Empty State - No namespaces */}
             {!loading && namespaces.length === 0 && (
               <div className="text-center py-12">
                 <Database className="h-16 w-16 mx-auto text-muted-foreground mb-4" />
@@ -792,6 +1017,20 @@ export default function App(): React.JSX.Element {
                 <Button onClick={() => setShowCreateDialog(true)}>
                   <Plus className="h-4 w-4 mr-2" />
                   Create Namespace
+                </Button>
+              </div>
+            )}
+
+            {/* Empty State - Filter has no matches */}
+            {!loading && namespaces.length > 0 && namespaceFilter && namespaces.filter(ns => ns.title.toLowerCase().includes(namespaceFilter.toLowerCase())).length === 0 && (
+              <div className="text-center py-12">
+                <Search className="h-16 w-16 mx-auto text-muted-foreground mb-4" />
+                <h3 className="text-xl font-semibold mb-2">No matching namespaces</h3>
+                <p className="text-muted-foreground mb-4">
+                  No namespaces match the filter "{namespaceFilter}"
+                </p>
+                <Button variant="outline" onClick={() => setNamespaceFilter('')}>
+                  Clear Filter
                 </Button>
               </div>
             )}
@@ -854,145 +1093,207 @@ export default function App(): React.JSX.Element {
               </div>
             )}
 
-            {/* Namespace Grid */}
-            {!loading && namespaces.length > 0 && (
-              <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
-                {namespaces.map((ns) => {
-                  const isSelected = selectedNamespaces.includes(ns.id)
-                  return (
-                    <Card 
-                      key={ns.id} 
-                      className={`hover:shadow-lg transition-shadow relative ${
-                        isSelected ? 'ring-2 ring-primary' : ''
-                      }`}
-                    >
-                      <div className="absolute top-4 left-4 z-10">
-                        <Checkbox
-                          checked={isSelected}
-                          onCheckedChange={() => toggleNamespaceSelection(ns.id)}
-                          onClick={(e) => e.stopPropagation()}
-                        />
-                      </div>
-                      <CardHeader className="pl-12">
-                        <div className="flex items-start justify-between">
-                          <Database className="h-8 w-8 text-primary" />
-                        </div>
-                        <CardTitle className="mt-4">{ns.title}</CardTitle>
-                        <CardDescription className="font-mono text-xs">{ns.id}</CardDescription>
-                      </CardHeader>
-                      <CardContent>
-                        <div className="space-y-2 text-sm mb-4">
-                          {ns.last_accessed && (
-                            <div className="flex justify-between">
-                              <span className="text-muted-foreground">Last Accessed:</span>
-                              <span className="font-medium">{formatDate(ns.last_accessed)}</span>
-                            </div>
-                          )}
-                          {ns.estimated_key_count !== undefined && (
-                            <div className="flex justify-between">
-                              <span className="text-muted-foreground">Est. Keys:</span>
-                              <span className="font-medium">{ns.estimated_key_count}</span>
-                            </div>
-                          )}
-                        </div>
-                        <div className="space-y-2">
-                          <Button 
-                            variant="outline" 
-                            size="sm" 
-                            className="w-full"
-                            onClick={() => setCurrentView({ 
-                              type: 'namespace', 
+            {/* Namespace Grid/List View */}
+            {!loading && namespaces.length > 0 && namespaces.filter(ns => ns.title.toLowerCase().includes(namespaceFilter.toLowerCase())).length > 0 && (
+              <>
+                {/* List View */}
+                {viewMode === 'list' && (
+                  <div className="border rounded-lg">
+                    <table className="w-full">
+                      <thead className="bg-muted/50">
+                        <tr>
+                          <th className="w-12 p-4">
+                            <Checkbox
+                              checked={selectedNamespaces.length === namespaces.filter(ns => ns.title.toLowerCase().includes(namespaceFilter.toLowerCase())).length && selectedNamespaces.length > 0}
+                              onCheckedChange={(checked) => {
+                                if (checked) {
+                                  setSelectedNamespaces(namespaces.filter(ns => ns.title.toLowerCase().includes(namespaceFilter.toLowerCase())).map(ns => ns.id))
+                                } else {
+                                  setSelectedNamespaces([])
+                                }
+                              }}
+                              aria-label="Select all namespaces"
+                            />
+                          </th>
+                          <th className="text-left p-4 font-semibold">Namespace</th>
+                          <th className="text-left p-4 font-semibold">Est. Keys</th>
+                          <th className="w-72 p-4"></th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {namespaces.filter(ns => ns.title.toLowerCase().includes(namespaceFilter.toLowerCase())).map((ns) => (
+                          <NamespaceListRow
+                            key={ns.id}
+                            namespace={ns}
+                            isSelected={selectedNamespaces.includes(ns.id)}
+                            onToggleSelection={() => toggleNamespaceSelection(ns.id)}
+                            onBrowseKeys={() => setCurrentView({
+                              type: 'namespace',
                               namespaceId: ns.id,
                               namespaceTitle: ns.title
                             })}
-                          >
-                            <Database className="h-3.5 w-3.5 mr-1.5" />
-                            Browse Keys
-                          </Button>
-                          <div className="flex gap-2">
-                            <Button 
-                              variant="outline" 
-                              size="sm"
-                              className="flex-1"
-                              onClick={() => openExportDialog(ns.id)}
-                            >
-                              <Download className="h-3.5 w-3.5 mr-1" />
-                              Export
-                            </Button>
-                            <Button 
-                              variant="outline" 
-                              size="sm"
-                              className="flex-1"
-                              onClick={() => openImportDialog(ns.id)}
-                            >
-                              <Upload className="h-3.5 w-3.5 mr-1" />
-                              Import
-                            </Button>
+                            onExport={() => openExportDialog(ns.id)}
+                            onImport={() => openImportDialog(ns.id)}
+                            onBackupR2={() => openR2BackupDialog(ns.id)}
+                            onRestoreR2={() => openR2RestoreDialog(ns.id)}
+                            onSync={() => handleSyncNamespace(ns.id, ns.title)}
+                            onRename={() => openRenameDialog(ns.id, ns.title)}
+                            onDelete={() => handleDeleteNamespace(ns.id)}
+                          />
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                )}
+
+                {/* Grid View */}
+                {viewMode === 'grid' && (
+                  <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+                    {namespaces.filter(ns => ns.title.toLowerCase().includes(namespaceFilter.toLowerCase())).map((ns) => {
+                      const isSelected = selectedNamespaces.includes(ns.id)
+                      return (
+                        <Card
+                          key={ns.id}
+                          className={`hover:shadow-lg transition-shadow relative ${isSelected ? 'ring-2 ring-primary' : ''
+                            }`}
+                        >
+                          <div className="absolute top-4 left-4 z-10">
+                            <Checkbox
+                              checked={isSelected}
+                              onCheckedChange={() => toggleNamespaceSelection(ns.id)}
+                              onClick={(e) => e.stopPropagation()}
+                            />
                           </div>
-                          <div className="flex gap-2">
-                            <Button 
-                              variant="outline" 
-                              size="sm"
-                              className="flex-1"
-                              onClick={() => openR2BackupDialog(ns.id)}
+                          <CardHeader className="pl-12">
+                            <div className="flex items-start justify-between">
+                              <Database className="h-8 w-8 text-primary" />
+                            </div>
+                            <CardTitle className="mt-4">{ns.title}</CardTitle>
+                            <CardDescription
+                              className="font-mono text-xs cursor-pointer hover:text-foreground transition-colors"
+                              onClick={async () => {
+                                await navigator.clipboard.writeText(ns.id)
+                              }}
+                              title="Click to copy ID"
                             >
-                              <Database className="h-3.5 w-3.5 mr-1" />
-                              Backup to R2
-                            </Button>
-                            <Button 
-                              variant="outline" 
-                              size="sm"
-                              className="flex-1"
-                              onClick={() => openR2RestoreDialog(ns.id)}
-                            >
-                              <RefreshCw className="h-3.5 w-3.5 mr-1" />
-                              Restore from R2
-                            </Button>
-                          </div>
-                          <div className="flex gap-2">
-                            <Button 
-                              variant="outline" 
-                              size="sm"
-                              className="flex-1"
-                              onClick={() => handleSyncNamespace(ns.id, ns.title)}
-                              title="Sync all keys to search index"
-                            >
-                              <RefreshCw className="h-3.5 w-3.5 mr-1" />
-                              Sync Search
-                            </Button>
-                          </div>
-                          <div className="flex gap-2">
-                            <Button 
-                              variant="outline" 
-                              size="sm"
-                              className="flex-1"
-                              onClick={() => openRenameDialog(ns.id, ns.title)}
-                            >
-                              Rename
-                            </Button>
-                            <Button 
-                              variant="destructive" 
-                              size="sm"
-                              className="flex-1"
-                              onClick={() => handleDeleteNamespace(ns.id)}
-                            >
-                              Delete
-                            </Button>
-                          </div>
-                        </div>
-                      </CardContent>
-                    </Card>
-                  )
-                })}
-              </div>
+                              ID: {ns.id}
+                            </CardDescription>
+                          </CardHeader>
+                          <CardContent>
+                            <div className="space-y-2 text-sm mb-4">
+                              {ns.last_accessed && (
+                                <div className="flex justify-between">
+                                  <span className="text-muted-foreground">Last Accessed:</span>
+                                  <span className="font-medium">{formatDate(ns.last_accessed)}</span>
+                                </div>
+                              )}
+                              {ns.estimated_key_count !== undefined && (
+                                <div className="flex justify-between">
+                                  <span className="text-muted-foreground">Est. Keys:</span>
+                                  <span className="font-medium">{ns.estimated_key_count}</span>
+                                </div>
+                              )}
+                            </div>
+                            <div className="space-y-2">
+                              <Button
+                                variant="outline"
+                                size="sm"
+                                className="w-full"
+                                onClick={() => setCurrentView({
+                                  type: 'namespace',
+                                  namespaceId: ns.id,
+                                  namespaceTitle: ns.title
+                                })}
+                              >
+                                <Database className="h-3.5 w-3.5 mr-1.5" />
+                                Browse Keys
+                              </Button>
+                              <div className="flex gap-2">
+                                <Button
+                                  variant="outline"
+                                  size="sm"
+                                  className="flex-1"
+                                  onClick={() => openExportDialog(ns.id)}
+                                >
+                                  <Download className="h-3.5 w-3.5 mr-1" />
+                                  Export
+                                </Button>
+                                <Button
+                                  variant="outline"
+                                  size="sm"
+                                  className="flex-1"
+                                  onClick={() => openImportDialog(ns.id)}
+                                >
+                                  <Upload className="h-3.5 w-3.5 mr-1" />
+                                  Import
+                                </Button>
+                              </div>
+                              <div className="flex gap-2">
+                                <Button
+                                  variant="outline"
+                                  size="sm"
+                                  className="flex-1"
+                                  onClick={() => openR2BackupDialog(ns.id)}
+                                >
+                                  <Database className="h-3.5 w-3.5 mr-1" />
+                                  Backup to R2
+                                </Button>
+                                <Button
+                                  variant="outline"
+                                  size="sm"
+                                  className="flex-1"
+                                  onClick={() => openR2RestoreDialog(ns.id)}
+                                >
+                                  <RefreshCw className="h-3.5 w-3.5 mr-1" />
+                                  Restore from R2
+                                </Button>
+                              </div>
+                              <div className="flex gap-2">
+                                <Button
+                                  variant="outline"
+                                  size="sm"
+                                  className="flex-1"
+                                  onClick={() => handleSyncNamespace(ns.id, ns.title)}
+                                  title="Sync all keys to search index"
+                                >
+                                  <RefreshCw className="h-3.5 w-3.5 mr-1" />
+                                  Sync Search
+                                </Button>
+                              </div>
+                              <div className="flex gap-2">
+                                <Button
+                                  variant="outline"
+                                  size="sm"
+                                  className="flex-1"
+                                  onClick={() => openRenameDialog(ns.id, ns.title)}
+                                >
+                                  Rename
+                                </Button>
+                                <Button
+                                  variant="destructive"
+                                  size="sm"
+                                  className="flex-1"
+                                  onClick={() => handleDeleteNamespace(ns.id)}
+                                >
+                                  Delete
+                                </Button>
+                              </div>
+                            </div>
+                          </CardContent>
+                        </Card>
+                      )
+                    })}
+                  </div>
+                )}
+              </>
             )}
           </>
         )}
 
         {currentView.type === 'namespace' && (
           <div>
-            <Button 
-              variant="outline" 
+            <Button
+              variant="outline"
               onClick={() => setCurrentView({ type: 'list' })}
               className="mb-6"
             >
@@ -1144,8 +1445,8 @@ export default function App(): React.JSX.Element {
                       {keys.map((key) => {
                         const isSelected = selectedKeys.includes(key.name)
                         return (
-                          <tr 
-                            key={key.name} 
+                          <tr
+                            key={key.name}
                             className={`border-t hover:bg-muted/50 ${isSelected ? 'bg-primary/5' : ''}`}
                           >
                             <td className="p-4">
@@ -1155,9 +1456,12 @@ export default function App(): React.JSX.Element {
                               />
                             </td>
                             <td className="p-4">
-                              <div 
+                              <div
                                 className="font-mono text-sm cursor-pointer hover:text-primary hover:underline"
-                                onClick={() => setSelectedKeyForEdit(key.name)}
+                                onClick={() => {
+                                  setSelectedKeyForEdit(key.name)
+                                  setEditKeyTimestamp(Date.now())
+                                }}
                               >
                                 {key.name}
                               </div>
@@ -1166,24 +1470,37 @@ export default function App(): React.JSX.Element {
                               {key.expiration ? new Date(key.expiration * 1000).toLocaleString() : 'Never'}
                             </td>
                             <td className="p-4">
-                              <Button
-                                variant="ghost"
-                                size="sm"
-                                onClick={async () => {
-                                  if (confirm(`Delete key "${key.name}"?`)) {
-                                    try {
-                                      await api.deleteKey(currentView.namespaceId, key.name)
-                                      setKeysCursor(undefined)
-                                      setKeysListComplete(true)
-                                      await loadKeys(currentView.namespaceId, false, undefined)
-                                    } catch (err) {
-                                      setError(err instanceof Error ? err.message : 'Failed to delete key')
+                              <div className="flex items-center gap-1">
+                                <Button
+                                  variant="ghost"
+                                  size="sm"
+                                  onClick={() => openRenameKeyDialog(key.name)}
+                                  aria-label={`Rename key ${key.name}`}
+                                  title="Rename Key"
+                                >
+                                  <Pencil className="h-4 w-4" />
+                                </Button>
+                                <Button
+                                  variant="ghost"
+                                  size="sm"
+                                  onClick={async () => {
+                                    if (confirm(`Delete key "${key.name}"?`)) {
+                                      try {
+                                        await api.deleteKey(currentView.namespaceId, key.name)
+                                        setKeysCursor(undefined)
+                                        setKeysListComplete(true)
+                                        await loadKeys(currentView.namespaceId, false, undefined)
+                                      } catch (err) {
+                                        setError(err instanceof Error ? err.message : 'Failed to delete key')
+                                      }
                                     }
-                                  }
-                                }}
-                              >
-                                <Trash2 className="h-4 w-4" />
-                              </Button>
+                                  }}
+                                  aria-label={`Delete key ${key.name}`}
+                                  title="Delete Key"
+                                >
+                                  <Trash2 className="h-4 w-4" />
+                                </Button>
+                              </div>
                             </td>
                           </tr>
                         )
@@ -1209,37 +1526,52 @@ export default function App(): React.JSX.Element {
           </div>
         )}
 
-        {/* Search View */}
-        {currentView.type === 'search' && (
-          <SearchKeys
-            namespaces={namespaces}
-            onNavigateToKey={(namespaceId, keyName) => {
-              const ns = namespaces.find(n => n.id === namespaceId)
-              if (ns) {
-                setCurrentView({
-                  type: 'namespace',
-                  namespaceId: ns.id,
-                  namespaceTitle: ns.title
-                })
-                // After view changes, the key will be loaded; we can optionally open the editor
-                setTimeout(() => setSelectedKeyForEdit(keyName), 100)
-              }
-            }}
-          />
-        )}
+        {/* Lazy-loaded views with Suspense fallback */}
+        <Suspense fallback={
+          <div className="flex items-center justify-center py-16">
+            <Loader2 className="h-8 w-8 animate-spin text-muted-foreground" />
+          </div>
+        }>
+          {/* Search View */}
+          {currentView.type === 'search' && (
+            <SearchKeys
+              namespaces={namespaces}
+              onNavigateToKey={(namespaceId, keyName) => {
+                const ns = namespaces.find(n => n.id === namespaceId)
+                if (ns) {
+                  setCurrentView({
+                    type: 'namespace',
+                    namespaceId: ns.id,
+                    namespaceTitle: ns.title
+                  })
+                  // After view changes, the key will be loaded; we can optionally open the editor
+                  setTimeout(() => {
+                    setSelectedKeyForEdit(keyName)
+                    setEditKeyTimestamp(Date.now())
+                  }, 100)
+                }
+              }}
+            />
+          )}
 
-        {/* Job History View */}
-        {currentView.type === 'job-history' && (
-          <JobHistory namespaces={namespaces} />
-        )}
+          {/* Metrics View */}
+          {currentView.type === 'metrics' && (
+            <KVMetrics namespaces={namespaces} />
+          )}
 
-        {/* Audit Log View */}
-        {currentView.type === 'audit' && (
-          <AuditLog
-            namespaces={namespaces}
-            selectedNamespaceId={currentView.namespaceId}
-          />
-        )}
+          {/* Job History View */}
+          {currentView.type === 'job-history' && (
+            <JobHistory namespaces={namespaces} />
+          )}
+
+          {/* Audit Log View */}
+          {currentView.type === 'audit' && (
+            <AuditLog
+              namespaces={namespaces}
+              {...(currentView.namespaceId ? { selectedNamespaceId: currentView.namespaceId } : {})}
+            />
+          )}
+        </Suspense>
       </main>
 
       {/* Create Namespace Dialog */}
@@ -1365,21 +1697,25 @@ export default function App(): React.JSX.Element {
                 onChange={(e) => setNewKeyTTL(e.target.value)}
                 min="60"
               />
+              {newKeyTTL.trim() && parseInt(newKeyTTL) > 0 && parseInt(newKeyTTL) < 60 && (
+                <p className="text-sm text-destructive">
+                  TTL must be at least 60 seconds (Cloudflare KV minimum)
+                </p>
+              )}
               <p className="text-sm text-muted-foreground">
                 Optional. Set time-to-live in seconds (minimum 60).
               </p>
             </div>
-            <div className="grid gap-2">
-              <Label htmlFor="key-metadata">Metadata (JSON)</Label>
-              <Textarea
-                id="key-metadata"
-                placeholder='{"key": "value"}'
-                value={newKeyMetadata}
-                onChange={(e) => setNewKeyMetadata(e.target.value)}
-                className="font-mono"
-                rows={3}
-              />
-            </div>
+            <JsonEditor
+              id="key-metadata"
+              name="key-metadata"
+              label="Metadata (JSON)"
+              value={newKeyMetadata}
+              onChange={setNewKeyMetadata}
+              placeholder='{"key": "value"}'
+              helpText="Optional JSON metadata stored with the key (limited to 1024 bytes)"
+              rows={3}
+            />
           </div>
           <DialogFooter>
             <Button
@@ -1395,7 +1731,10 @@ export default function App(): React.JSX.Element {
             >
               Cancel
             </Button>
-            <Button onClick={handleCreateKey} disabled={creatingKey || !newKeyName.trim()}>
+            <Button
+              onClick={handleCreateKey}
+              disabled={creatingKey || !newKeyName.trim() || (newKeyTTL.trim() !== '' && parseInt(newKeyTTL) > 0 && parseInt(newKeyTTL) < 60)}
+            >
               {creatingKey && <Loader2 className="h-4 w-4 mr-2 animate-spin" />}
               Create
             </Button>
@@ -1406,6 +1745,7 @@ export default function App(): React.JSX.Element {
       {/* Key Editor Dialog */}
       {currentView.type === 'namespace' && selectedKeyForEdit && (
         <KeyEditorDialog
+          key={`${selectedKeyForEdit}-${editKeyTimestamp}`}
           open={!!selectedKeyForEdit}
           onOpenChange={(open) => {
             if (!open) setSelectedKeyForEdit(null)
@@ -1422,6 +1762,60 @@ export default function App(): React.JSX.Element {
         />
       )}
 
+      {/* Rename Key Dialog */}
+      <Dialog open={showRenameKeyDialog} onOpenChange={setShowRenameKeyDialog}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Rename Key</DialogTitle>
+            <DialogDescription>
+              Enter a new name for this key. The value, metadata, and tags will be preserved.
+            </DialogDescription>
+          </DialogHeader>
+          <div className="grid gap-4 py-4">
+            <div className="grid gap-2">
+              <Label htmlFor="rename-key-old">Current Name</Label>
+              <Input
+                id="rename-key-old"
+                value={renameKeyOldName}
+                disabled
+                className="font-mono bg-muted"
+              />
+            </div>
+            <div className="grid gap-2">
+              <Label htmlFor="rename-key-new">New Name</Label>
+              <Input
+                id="rename-key-new"
+                placeholder="new-key-name"
+                value={renameKeyNewName}
+                onChange={(e) => setRenameKeyNewName(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter' && !renamingKey && renameKeyNewName.trim() && renameKeyNewName !== renameKeyOldName) {
+                    handleRenameKey();
+                  }
+                }}
+                className="font-mono"
+              />
+            </div>
+          </div>
+          <DialogFooter>
+            <Button
+              variant="outline"
+              onClick={() => setShowRenameKeyDialog(false)}
+              disabled={renamingKey}
+            >
+              Cancel
+            </Button>
+            <Button
+              onClick={handleRenameKey}
+              disabled={renamingKey || !renameKeyNewName.trim() || renameKeyNewName === renameKeyOldName}
+            >
+              {renamingKey && <Loader2 className="h-4 w-4 mr-2 animate-spin" />}
+              Rename
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
       {/* Export Dialog */}
       <Dialog open={showExportDialog} onOpenChange={setShowExportDialog}>
         <DialogContent>
@@ -1433,9 +1827,9 @@ export default function App(): React.JSX.Element {
           </DialogHeader>
           <div className="grid gap-4 py-4">
             <div className="grid gap-2">
-              <Label>Export Format</Label>
+              <Label htmlFor="export-format-select">Export Format</Label>
               <Select value={exportFormat} onValueChange={(v) => setExportFormat(v as 'json' | 'ndjson')}>
-                <SelectTrigger>
+                <SelectTrigger id="export-format-select" aria-label="Export format">
                   <SelectValue />
                 </SelectTrigger>
                 <SelectContent>
@@ -1504,9 +1898,9 @@ export default function App(): React.JSX.Element {
           </DialogHeader>
           <div className="grid gap-4 py-4">
             <div className="grid gap-2">
-              <Label>Backup Format</Label>
+              <Label htmlFor="r2-backup-format-select">Backup Format</Label>
               <Select value={r2BackupFormat} onValueChange={(v) => setR2BackupFormat(v as 'json' | 'ndjson')}>
-                <SelectTrigger>
+                <SelectTrigger id="r2-backup-format-select" aria-label="Backup format">
                   <SelectValue />
                 </SelectTrigger>
                 <SelectContent>
@@ -1548,9 +1942,9 @@ export default function App(): React.JSX.Element {
               </p>
             ) : (
               <div className="grid gap-2">
-                <Label>Select Backup</Label>
+                <Label htmlFor="r2-restore-backup-select">Select Backup</Label>
                 <Select value={selectedR2Backup} onValueChange={setSelectedR2Backup}>
-                  <SelectTrigger>
+                  <SelectTrigger id="r2-restore-backup-select" aria-label="Select backup">
                     <SelectValue placeholder="Choose a backup..." />
                   </SelectTrigger>
                   <SelectContent>
@@ -1587,9 +1981,9 @@ export default function App(): React.JSX.Element {
           </DialogHeader>
           <div className="grid gap-4 py-4">
             <div className="grid gap-2">
-              <Label>Backup Format</Label>
+              <Label htmlFor="batch-r2-backup-format-select">Backup Format</Label>
               <Select value={batchR2BackupFormat} onValueChange={(v) => setBatchR2BackupFormat(v as 'json' | 'ndjson')}>
-                <SelectTrigger>
+                <SelectTrigger id="batch-r2-backup-format-select" aria-label="Backup format">
                   <SelectValue />
                 </SelectTrigger>
                 <SelectContent>
@@ -1640,15 +2034,15 @@ export default function App(): React.JSX.Element {
                   const ns = namespaces.find(n => n.id === nsId)
                   const backups = batchR2RestoreNamespaceBackups.get(nsId) || []
                   const selectedBackup = batchR2RestoreSelections.get(nsId)
-                  
+
                   return (
                     <div key={nsId} className="border rounded-lg p-4">
                       <h4 className="font-medium mb-2">{ns?.title || nsId}</h4>
                       {backups.length === 0 ? (
                         <p className="text-sm text-muted-foreground">No backups found</p>
                       ) : (
-                        <Select 
-                          value={selectedBackup || ''} 
+                        <Select
+                          value={selectedBackup || ''}
                           onValueChange={(value) => {
                             setBatchR2RestoreSelections(prev => {
                               const newMap = new Map(prev)

@@ -86,7 +86,7 @@ export function SearchKeys({ namespaces, onNavigateToKey }: SearchKeysProps): Re
           <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
             {/* Query Input */}
             <div className="space-y-2">
-              <Label htmlFor="search-query">Key Name</Label>
+              <Label htmlFor="search-query">Search</Label>
               <div className="relative">
                 <Search className="absolute left-3 top-3 h-4 w-4 text-muted-foreground" />
                 <Input
@@ -94,12 +94,12 @@ export function SearchKeys({ namespaces, onNavigateToKey }: SearchKeysProps): Re
                   name="search-query"
                   value={query}
                   onChange={(e) => setQuery(e.target.value)}
-                  placeholder="e.g., user:123, config:api..."
+                  placeholder="Search by key name or tag..."
                   className="pl-9"
                 />
               </div>
               <p className="text-xs text-muted-foreground">
-                Search for keys by name (partial matches). Leave empty to search by tags only.
+                Search for keys by name or tag (partial matches).
               </p>
             </div>
 
@@ -124,7 +124,7 @@ export function SearchKeys({ namespaces, onNavigateToKey }: SearchKeysProps): Re
 
           {/* Tag Filter */}
           <div className="space-y-2">
-            <Label htmlFor="tag-filter">Tags (comma-separated)</Label>
+            <Label htmlFor="tag-filter">Filter by Specific Tags (comma-separated)</Label>
             <Input
               id="tag-filter"
               name="tag-filter"
@@ -133,7 +133,7 @@ export function SearchKeys({ namespaces, onNavigateToKey }: SearchKeysProps): Re
               placeholder="e.g., production, config, dev"
             />
             <p className="text-xs text-muted-foreground">
-              Filter by tags. You can search by tags alone or combine with key name search.
+              Optional: Filter results to only show keys with these exact tags.
             </p>
           </div>
         </div>

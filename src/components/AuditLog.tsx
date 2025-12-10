@@ -23,7 +23,8 @@ interface AuditEntry {
 
 export function AuditLog({ namespaces, selectedNamespaceId }: AuditLogProps): React.JSX.Element {
   const [viewMode, setViewMode] = useState<'namespace' | 'user'>('namespace')
-  const [selectedNamespace, setSelectedNamespace] = useState<string>(selectedNamespaceId || '')
+  // Default to 'all' to show all namespace events including deleted namespaces
+  const [selectedNamespace, setSelectedNamespace] = useState<string>(selectedNamespaceId || 'all')
   const [operationFilter, setOperationFilter] = useState<string>('all')
   const [logs, setLogs] = useState<AuditEntry[]>([])
   const [loading, setLoading] = useState(false)
@@ -64,7 +65,7 @@ export function AuditLog({ namespaces, selectedNamespaceId }: AuditLogProps): Re
       }
 
       const data = await api.getAuditLog(selectedNamespace, options)
-      
+
       if (reset) {
         setLogs(data as unknown as AuditEntry[])
         setOffset(limit)
@@ -98,7 +99,7 @@ export function AuditLog({ namespaces, selectedNamespaceId }: AuditLogProps): Re
     if (diffMins < 60) return `${diffMins}m ago`
     if (diffHours < 24) return `${diffHours}h ago`
     if (diffDays < 7) return `${diffDays}d ago`
-    
+
     return date.toLocaleDateString() + ' ' + date.toLocaleTimeString()
   }
 
@@ -134,7 +135,13 @@ export function AuditLog({ namespaces, selectedNamespaceId }: AuditLogProps): Re
     bulk_copy: 'text-purple-600 dark:text-purple-400',
     bulk_ttl_update: 'text-orange-600 dark:text-orange-400',
     export: 'text-cyan-600 dark:text-cyan-400',
-    import: 'text-indigo-600 dark:text-indigo-400'
+    import: 'text-indigo-600 dark:text-indigo-400',
+    create_namespace: 'text-emerald-600 dark:text-emerald-400',
+    rename_namespace: 'text-sky-600 dark:text-sky-400',
+    delete_namespace: 'text-rose-600 dark:text-rose-400',
+    rename_key: 'text-amber-600 dark:text-amber-400',
+    r2_backup: 'text-violet-600 dark:text-violet-400',
+    r2_restore: 'text-fuchsia-600 dark:text-fuchsia-400'
   }
 
   return (
@@ -160,6 +167,7 @@ export function AuditLog({ namespaces, selectedNamespaceId }: AuditLogProps): Re
                 <SelectValue placeholder="Select a namespace" />
               </SelectTrigger>
               <SelectContent>
+                <SelectItem value="all">All Namespaces</SelectItem>
                 {namespaces.map((ns) => (
                   <SelectItem key={ns.id} value={ns.id}>
                     {ns.title}
@@ -178,14 +186,20 @@ export function AuditLog({ namespaces, selectedNamespaceId }: AuditLogProps): Re
               </SelectTrigger>
               <SelectContent>
                 <SelectItem value="all">All Operations</SelectItem>
-                <SelectItem value="create">Create</SelectItem>
-                <SelectItem value="update">Update</SelectItem>
-                <SelectItem value="delete">Delete</SelectItem>
+                <SelectItem value="create">Create Key</SelectItem>
+                <SelectItem value="update">Update Key</SelectItem>
+                <SelectItem value="delete">Delete Key</SelectItem>
+                <SelectItem value="rename_key">Rename Key</SelectItem>
                 <SelectItem value="bulk_delete">Bulk Delete</SelectItem>
                 <SelectItem value="bulk_copy">Bulk Copy</SelectItem>
                 <SelectItem value="bulk_ttl_update">Bulk TTL Update</SelectItem>
                 <SelectItem value="export">Export</SelectItem>
                 <SelectItem value="import">Import</SelectItem>
+                <SelectItem value="r2_backup">R2 Backup</SelectItem>
+                <SelectItem value="r2_restore">R2 Restore</SelectItem>
+                <SelectItem value="create_namespace">Create Namespace</SelectItem>
+                <SelectItem value="rename_namespace">Rename Namespace</SelectItem>
+                <SelectItem value="delete_namespace">Delete Namespace</SelectItem>
               </SelectContent>
             </Select>
           </div>
@@ -230,6 +244,11 @@ export function AuditLog({ namespaces, selectedNamespaceId }: AuditLogProps): Re
                   </div>
                   <div className="text-xs text-muted-foreground">
                     {log.user_email || 'Unknown user'} • {formatTimestamp(log.timestamp)}
+                    {selectedNamespace === 'all' && (
+                      <span className="ml-2 font-mono text-xs">
+                        • {namespaces.find(ns => ns.id === log.namespace_id)?.title || log.namespace_id}
+                      </span>
+                    )}
                   </div>
                   {log.details && (
                     <div className="text-xs text-muted-foreground mt-2 font-mono bg-muted p-2 rounded">

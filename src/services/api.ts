@@ -2,6 +2,177 @@ import { apiLogger } from '../lib/logger'
 
 const WORKER_API = import.meta.env.VITE_WORKER_API || window.location.origin
 
+// ============================================================================
+// CACHING & RATE LIMITING INFRASTRUCTURE
+// ============================================================================
+
+// Cache TTL configuration (in milliseconds)
+const CACHE_TTL = {
+  DEFAULT: 5 * 60 * 1000,  // 5 minutes for general data
+  METRICS: 2 * 60 * 1000,  // 2 minutes for metrics/stats
+  SHORT: 30 * 1000,        // 30 seconds for frequently changing data
+} as const
+
+// Rate limit configuration
+const RATE_LIMIT_CONFIG = {
+  INITIAL_BACKOFF: 2000,      // Start with 2 second delay
+  MAX_BACKOFF: 8000,          // Max 8 second delay
+  BACKOFF_MULTIPLIER: 2,      // Double the delay each retry
+  RETRY_CODES: [429, 503, 504], // HTTP codes to retry
+}
+
+// Cache entry interface
+interface CacheEntry<T> {
+  data: T
+  timestamp: number
+}
+
+// In-memory cache
+const cache = new Map<string, CacheEntry<unknown>>()
+
+// Track in-flight requests for deduplication
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+const inFlightRequests = new Map<string, Promise<any>>()
+
+/**
+ * Deduplicate concurrent requests for the same key
+ * If a request for the same key is already in flight, return the existing promise
+ */
+function deduplicateRequest<T>(key: string, fetchFn: () => Promise<T>): Promise<T> {
+  const existing = inFlightRequests.get(key)
+  if (existing) {
+    return existing as Promise<T>
+  }
+
+  const promise = fetchFn().finally(() => {
+    inFlightRequests.delete(key)
+  })
+
+  inFlightRequests.set(key, promise)
+  return promise
+}
+
+/**
+ * Sleep utility for exponential backoff
+ */
+function sleep(ms: number): Promise<void> {
+  return new Promise(resolve => setTimeout(resolve, ms))
+}
+
+/**
+ * Check if cache entry is still valid
+ */
+function isCacheValid<T>(entry: CacheEntry<T> | undefined, ttl: number): entry is CacheEntry<T> {
+  if (!entry) return false
+  return Date.now() - entry.timestamp < ttl
+}
+
+/**
+ * Get data from cache if valid
+ */
+function getFromCache<T>(key: string, ttl: number): T | null {
+  const entry = cache.get(key) as CacheEntry<T> | undefined
+  if (isCacheValid(entry, ttl)) {
+    return entry.data
+  }
+  // Clean up expired entry
+  if (entry) {
+    cache.delete(key)
+  }
+  return null
+}
+
+/**
+ * Store data in cache
+ */
+function setInCache<T>(key: string, data: T): void {
+  cache.set(key, {
+    data,
+    timestamp: Date.now(),
+  })
+}
+
+/**
+ * Invalidate cache entries matching a pattern
+ */
+function invalidateCache(pattern: string | RegExp): void {
+  const keysToDelete: string[] = []
+
+  for (const key of cache.keys()) {
+    if (typeof pattern === 'string') {
+      if (key.startsWith(pattern)) {
+        keysToDelete.push(key)
+      }
+    } else {
+      if (pattern.test(key)) {
+        keysToDelete.push(key)
+      }
+    }
+  }
+
+  keysToDelete.forEach(key => cache.delete(key))
+}
+
+/**
+ * Fetch with exponential backoff for rate limiting
+ */
+async function fetchWithBackoff(
+  url: string,
+  options: RequestInit,
+  maxRetries = 3
+): Promise<Response> {
+  let lastError: Error | null = null
+  let backoffMs = RATE_LIMIT_CONFIG.INITIAL_BACKOFF
+
+  for (let attempt = 0; attempt <= maxRetries; attempt++) {
+    try {
+      const response = await fetch(url, options)
+
+      // If rate limited, retry with backoff
+      if (RATE_LIMIT_CONFIG.RETRY_CODES.includes(response.status) && attempt < maxRetries) {
+        apiLogger.warn(`Rate limited (${response.status}), retrying in ${backoffMs}ms`, {
+          attempt: attempt + 1,
+          maxRetries,
+          url,
+        })
+
+        await sleep(backoffMs)
+        backoffMs = Math.min(
+          backoffMs * RATE_LIMIT_CONFIG.BACKOFF_MULTIPLIER,
+          RATE_LIMIT_CONFIG.MAX_BACKOFF
+        )
+        continue
+      }
+
+      return response
+    } catch (error) {
+      lastError = error instanceof Error ? error : new Error(String(error))
+
+      // Only retry on network errors if we have retries left
+      if (attempt < maxRetries) {
+        apiLogger.warn(`Network error, retrying in ${backoffMs}ms`, {
+          attempt: attempt + 1,
+          maxRetries,
+          error: lastError.message,
+        })
+
+        await sleep(backoffMs)
+        backoffMs = Math.min(
+          backoffMs * RATE_LIMIT_CONFIG.BACKOFF_MULTIPLIER,
+          RATE_LIMIT_CONFIG.MAX_BACKOFF
+        )
+        continue
+      }
+    }
+  }
+
+  throw lastError || new Error('Fetch failed after retries')
+}
+
+// ============================================================================
+// TYPE DEFINITIONS
+// ============================================================================
+
 // KV Namespace types
 export interface KVNamespace {
   id: string
@@ -130,6 +301,26 @@ export interface JobListResponse {
   offset: number
 }
 
+// KV Metrics types
+export interface KVOperationData {
+  date: string
+  actionType: string
+  requests: number
+  latencyMsP50?: number
+  latencyMsP90?: number
+  latencyMsP99?: number
+}
+
+export interface KVMetricsSummary {
+  namespaceId: string | null
+  startDate: string
+  endDate: string
+  totalOperations: number
+  operationsByType: Record<string, number>
+  avgLatencyMs: Record<string, { p50: number; p90: number; p99: number }>
+  dataPoints: KVOperationData[]
+}
+
 class APIService {
   /**
    * Get fetch options with credentials
@@ -152,33 +343,95 @@ class APIService {
       sessionStorage.clear();
       throw new Error(`Authentication error: ${response.status}`);
     }
-    
+
     if (!response.ok) {
       throw new Error(`API error: ${response.status} ${response.statusText}`);
     }
-    
+
     return response;
   }
+
+  // ============================================================================
+  // CACHE INVALIDATION METHODS
+  // ============================================================================
+
+  /**
+   * Invalidate all namespace-related cache entries
+   */
+  invalidateNamespaceCache(): void {
+    invalidateCache('namespaces:')
+  }
+
+  /**
+   * Invalidate all key-related cache entries for a specific namespace
+   */
+  invalidateKeysCache(namespaceId: string): void {
+    invalidateCache(`keys:${namespaceId}:`)
+  }
+
+  /**
+   * Invalidate cache for a specific job
+   */
+  invalidateJobCache(jobId: string): void {
+    invalidateCache(`job:${jobId}`)
+  }
+
+  /**
+   * Invalidate the job list cache
+   */
+  invalidateJobListCache(): void {
+    invalidateCache('jobs:list:')
+  }
+
+  /**
+   * Clear all caches (use sparingly)
+   */
+  invalidateAllCaches(): void {
+    cache.clear()
+  }
+
+  // ============================================================================
+  // NAMESPACE OPERATIONS
+  // ============================================================================
 
   /**
    * List all KV namespaces
    */
-  async listNamespaces(): Promise<KVNamespace[]> {
-    const response = await fetch(`${WORKER_API}/api/namespaces`, 
-      this.getFetchOptions()
-    )
-    
-    await this.handleResponse(response);
-    
-    const data = await response.json()
-    return data.result || []
+  async listNamespaces(skipCache = false): Promise<KVNamespace[]> {
+    const cacheKey = 'namespaces:list'
+
+    // Check cache first unless skipCache is true
+    if (!skipCache) {
+      const cached = getFromCache<KVNamespace[]>(cacheKey, CACHE_TTL.DEFAULT)
+      if (cached) {
+        return cached
+      }
+    }
+
+    // Use deduplication to prevent simultaneous duplicate requests
+    return deduplicateRequest(cacheKey, async () => {
+      const response = await fetchWithBackoff(
+        `${WORKER_API}/api/namespaces`,
+        this.getFetchOptions()
+      )
+
+      await this.handleResponse(response);
+
+      const data = await response.json()
+      const result = data.result || []
+
+      // Store in cache
+      setInCache(cacheKey, result)
+
+      return result
+    })
   }
 
   /**
    * Create a new namespace
    */
   async createNamespace(title: string): Promise<KVNamespace> {
-    const response = await fetch(`${WORKER_API}/api/namespaces`, {
+    const response = await fetchWithBackoff(`${WORKER_API}/api/namespaces`, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json'
@@ -186,10 +439,14 @@ class APIService {
       credentials: 'include',
       body: JSON.stringify({ title })
     })
-    
+
     await this.handleResponse(response);
-    
+
     const data = await response.json()
+
+    // Invalidate namespace cache
+    this.invalidateNamespaceCache()
+
     return data.result
   }
 
@@ -197,19 +454,22 @@ class APIService {
    * Delete a namespace
    */
   async deleteNamespace(namespaceId: string): Promise<void> {
-    const response = await fetch(`${WORKER_API}/api/namespaces/${namespaceId}`, {
+    const response = await fetchWithBackoff(`${WORKER_API}/api/namespaces/${namespaceId}`, {
       method: 'DELETE',
       credentials: 'include'
     })
-    
+
     await this.handleResponse(response);
+
+    // Invalidate namespace cache
+    this.invalidateNamespaceCache()
   }
 
   /**
    * Rename a namespace
    */
   async renameNamespace(namespaceId: string, title: string): Promise<KVNamespace> {
-    const response = await fetch(`${WORKER_API}/api/namespaces/${namespaceId}/rename`, {
+    const response = await fetchWithBackoff(`${WORKER_API}/api/namespaces/${namespaceId}/rename`, {
       method: 'PATCH',
       headers: {
         'Content-Type': 'application/json'
@@ -217,10 +477,14 @@ class APIService {
       credentials: 'include',
       body: JSON.stringify({ title })
     })
-    
+
     await this.handleResponse(response);
-    
+
     const data = await response.json()
+
+    // Invalidate namespace cache
+    this.invalidateNamespaceCache()
+
     return data.result
   }
 
@@ -232,9 +496,9 @@ class APIService {
       `${WORKER_API}/api/namespaces/${namespaceId}/info`,
       this.getFetchOptions()
     )
-    
+
     await this.handleResponse(response);
-    
+
     const data = await response.json()
     return data.result
   }
@@ -244,35 +508,58 @@ class APIService {
    */
   async listKeys(
     namespaceId: string,
-    options?: { prefix?: string; cursor?: string; limit?: number }
+    options?: { prefix?: string; cursor?: string; limit?: number; skipCache?: boolean }
   ): Promise<KVKeyListResponse> {
     const params = new URLSearchParams()
     if (options?.prefix) params.set('prefix', options.prefix)
     if (options?.cursor) params.set('cursor', options.cursor)
     if (options?.limit) params.set('limit', options.limit.toString())
 
-    const response = await fetch(
-      `${WORKER_API}/api/keys/${namespaceId}/list?${params.toString()}`,
-      this.getFetchOptions()
-    )
-    
-    await this.handleResponse(response);
-    
-    const data = await response.json()
-    return data.result
+    // Create cache key based on namespace and options
+    const cacheKey = `keys:${namespaceId}:${params.toString()}`
+
+    // Check cache first unless skipCache is true or cursor is present (pagination)
+    if (!options?.skipCache && !options?.cursor) {
+      const cached = getFromCache<KVKeyListResponse>(cacheKey, CACHE_TTL.DEFAULT)
+      if (cached) {
+        return cached
+      }
+    }
+
+    // Use deduplication to prevent simultaneous duplicate requests
+    return deduplicateRequest(cacheKey, async () => {
+      const response = await fetchWithBackoff(
+        `${WORKER_API}/api/keys/${namespaceId}/list?${params.toString()}`,
+        this.getFetchOptions()
+      )
+
+      await this.handleResponse(response);
+
+      const data = await response.json()
+      const result = data.result
+
+      // Cache only if not paginating
+      if (!options?.cursor) {
+        setInCache(cacheKey, result)
+      }
+
+      return result
+    })
   }
 
   /**
    * Get a key's value
    */
   async getKey(namespaceId: string, keyName: string): Promise<KVKeyWithValue> {
+    // Add cache-busting parameter to ensure fresh data after edits
+    const cacheBuster = `_t=${Date.now()}`
     const response = await fetch(
-      `${WORKER_API}/api/keys/${namespaceId}/${encodeURIComponent(keyName)}`,
+      `${WORKER_API}/api/keys/${namespaceId}/${encodeURIComponent(keyName)}?${cacheBuster}`,
       this.getFetchOptions()
     )
-    
+
     await this.handleResponse(response);
-    
+
     const data = await response.json()
     return data.result
   }
@@ -286,7 +573,7 @@ class APIService {
     value: string,
     options?: { metadata?: unknown; expiration_ttl?: number; create_backup?: boolean }
   ): Promise<void> {
-    const response = await fetch(
+    const response = await fetchWithBackoff(
       `${WORKER_API}/api/keys/${namespaceId}/${encodeURIComponent(keyName)}`,
       {
         method: 'PUT',
@@ -297,30 +584,58 @@ class APIService {
         body: JSON.stringify({ value, ...options })
       }
     )
-    
+
     await this.handleResponse(response);
+
+    // Invalidate keys cache for this namespace
+    this.invalidateKeysCache(namespaceId)
   }
 
   /**
    * Delete a key
    */
   async deleteKey(namespaceId: string, keyName: string): Promise<void> {
-    const response = await fetch(
+    const response = await fetchWithBackoff(
       `${WORKER_API}/api/keys/${namespaceId}/${encodeURIComponent(keyName)}`,
       {
         method: 'DELETE',
         credentials: 'include'
       }
     )
-    
+
     await this.handleResponse(response);
+
+    // Invalidate keys cache for this namespace
+    this.invalidateKeysCache(namespaceId)
+  }
+
+  /**
+   * Rename a key
+   */
+  async renameKey(namespaceId: string, oldName: string, newName: string): Promise<void> {
+    const response = await fetchWithBackoff(
+      `${WORKER_API}/api/keys/${namespaceId}/rename`,
+      {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json'
+        },
+        credentials: 'include',
+        body: JSON.stringify({ old_name: oldName, new_name: newName })
+      }
+    )
+
+    await this.handleResponse(response);
+
+    // Invalidate keys cache for this namespace
+    this.invalidateKeysCache(namespaceId)
   }
 
   /**
    * Bulk delete keys (async with job tracking)
    */
   async bulkDeleteKeys(namespaceId: string, keys: string[]): Promise<BulkJobResponse> {
-    const response = await fetch(
+    const response = await fetchWithBackoff(
       `${WORKER_API}/api/keys/${namespaceId}/bulk-delete`,
       {
         method: 'POST',
@@ -331,10 +646,14 @@ class APIService {
         body: JSON.stringify({ keys })
       }
     )
-    
+
     await this.handleResponse(response);
-    
+
     const data = await response.json()
+
+    // Invalidate keys cache for this namespace
+    this.invalidateKeysCache(namespaceId)
+
     return data.result
   }
 
@@ -346,9 +665,9 @@ class APIService {
       `${WORKER_API}/api/metadata/${namespaceId}/${encodeURIComponent(keyName)}`,
       this.getFetchOptions()
     )
-    
+
     await this.handleResponse(response);
-    
+
     const data = await response.json()
     return data.result
   }
@@ -372,7 +691,7 @@ class APIService {
         body: JSON.stringify(metadata)
       }
     )
-    
+
     await this.handleResponse(response);
   }
 
@@ -393,9 +712,9 @@ class APIService {
       `${WORKER_API}/api/search?${params.toString()}`,
       this.getFetchOptions()
     )
-    
+
     await this.handleResponse(response);
-    
+
     const data = await response.json()
     return data.result
   }
@@ -408,9 +727,9 @@ class APIService {
       `${WORKER_API}/api/backup/${namespaceId}/${encodeURIComponent(keyName)}/check`,
       this.getFetchOptions()
     )
-    
+
     await this.handleResponse(response);
-    
+
     const data = await response.json()
     return data.result?.exists ?? false
   }
@@ -426,7 +745,7 @@ class APIService {
         credentials: 'include'
       }
     )
-    
+
     await this.handleResponse(response);
   }
 
@@ -434,8 +753,8 @@ class APIService {
    * Bulk copy keys to another namespace (async with job tracking)
    */
   async bulkCopyKeys(
-    namespaceId: string, 
-    keys: string[], 
+    namespaceId: string,
+    keys: string[],
     targetNamespaceId: string
   ): Promise<BulkJobResponse> {
     const response = await fetch(
@@ -449,9 +768,9 @@ class APIService {
         body: JSON.stringify({ keys, target_namespace_id: targetNamespaceId })
       }
     )
-    
+
     await this.handleResponse(response);
-    
+
     const data = await response.json()
     return data.result
   }
@@ -460,8 +779,8 @@ class APIService {
    * Bulk update TTL for keys (async with job tracking)
    */
   async bulkUpdateTTL(
-    namespaceId: string, 
-    keys: string[], 
+    namespaceId: string,
+    keys: string[],
     expirationTtl: number
   ): Promise<BulkJobResponse> {
     const response = await fetch(
@@ -475,9 +794,9 @@ class APIService {
         body: JSON.stringify({ keys, expiration_ttl: expirationTtl })
       }
     )
-    
+
     await this.handleResponse(response);
-    
+
     const data = await response.json()
     return data.result
   }
@@ -502,9 +821,9 @@ class APIService {
         body: JSON.stringify({ keys, tags, operation })
       }
     )
-    
+
     await this.handleResponse(response);
-    
+
     const data = await response.json()
     return data.result
   }
@@ -517,9 +836,9 @@ class APIService {
       `${WORKER_API}/api/export/${namespaceId}?format=${format}`,
       this.getFetchOptions()
     )
-    
+
     await this.handleResponse(response);
-    
+
     const data = await response.json()
     return data.result
   }
@@ -543,9 +862,9 @@ class APIService {
         body: data
       }
     )
-    
+
     await this.handleResponse(response);
-    
+
     const data_result = await response.json()
     return data_result.result
   }
@@ -554,15 +873,20 @@ class APIService {
    * Get job status
    */
   async getJobStatus(jobId: string): Promise<Record<string, unknown>> {
-    const response = await fetch(
-      `${WORKER_API}/api/jobs/${jobId}`,
-      this.getFetchOptions()
-    )
-    
-    await this.handleResponse(response);
-    
-    const data = await response.json()
-    return data.result
+    const cacheKey = `job:${jobId}:status`
+
+    // Use deduplication to prevent simultaneous duplicate requests
+    return deduplicateRequest(cacheKey, async () => {
+      const response = await fetchWithBackoff(
+        `${WORKER_API}/api/jobs/${jobId}`,
+        this.getFetchOptions()
+      )
+
+      await this.handleResponse(response);
+
+      const data = await response.json()
+      return data.result
+    })
   }
 
   /**
@@ -573,9 +897,9 @@ class APIService {
       `${WORKER_API}/api/r2-backup/${namespaceId}/list`,
       this.getFetchOptions()
     )
-    
+
     await this.handleResponse(response);
-    
+
     const data = await response.json()
     return data.result
   }
@@ -591,9 +915,9 @@ class APIService {
         credentials: 'include'
       }
     )
-    
+
     await this.handleResponse(response);
-    
+
     const data = await response.json()
     return data.result
   }
@@ -613,9 +937,9 @@ class APIService {
         body: JSON.stringify({ backupPath })
       }
     )
-    
+
     await this.handleResponse(response);
-    
+
     const data = await response.json()
     return data.result
   }
@@ -624,7 +948,7 @@ class APIService {
    * Batch backup multiple namespaces to R2 (async with job tracking)
    */
   async batchBackupToR2(
-    namespaceIds: string[], 
+    namespaceIds: string[],
     format: 'json' | 'ndjson' = 'json'
   ): Promise<BulkJobResponse> {
     const response = await fetch(
@@ -638,9 +962,9 @@ class APIService {
         body: JSON.stringify({ namespace_ids: namespaceIds })
       }
     )
-    
+
     await this.handleResponse(response);
-    
+
     const data = await response.json()
     return data.result
   }
@@ -662,15 +986,15 @@ class APIService {
         body: JSON.stringify({ restore_map: restoreMap })
       }
     )
-    
+
     await this.handleResponse(response);
-    
+
     const data = await response.json()
     return data.result
   }
 
   /**
-   * Get audit log for namespace
+   * Get audit log for namespace (or all namespaces if namespaceId is 'all')
    */
   async getAuditLog(
     namespaceId: string,
@@ -681,13 +1005,15 @@ class APIService {
     if (options?.offset) params.set('offset', options.offset.toString())
     if (options?.operation) params.set('operation', options.operation)
 
-    const response = await fetch(
-      `${WORKER_API}/api/audit/${namespaceId}?${params.toString()}`,
-      this.getFetchOptions()
-    )
-    
+    // Use /api/audit/all for all namespaces, otherwise use namespace-specific endpoint
+    const endpoint = namespaceId === 'all'
+      ? `${WORKER_API}/api/audit/all?${params.toString()}`
+      : `${WORKER_API}/api/audit/${namespaceId}?${params.toString()}`
+
+    const response = await fetch(endpoint, this.getFetchOptions())
+
     await this.handleResponse(response);
-    
+
     const data = await response.json()
     return data.result
   }
@@ -708,9 +1034,9 @@ class APIService {
       `${WORKER_API}/api/audit/user/${encodeURIComponent(userEmail)}?${params.toString()}`,
       this.getFetchOptions()
     )
-    
+
     await this.handleResponse(response);
-    
+
     const data = await response.json()
     return data.result
   }
@@ -723,9 +1049,9 @@ class APIService {
       `${WORKER_API}/api/jobs/${jobId}/download`,
       this.getFetchOptions()
     )
-    
+
     await this.handleResponse(response);
-    
+
     const blob = await response.blob()
     const url = URL.createObjectURL(blob)
     const a = document.createElement('a')
@@ -743,9 +1069,9 @@ class APIService {
       `${WORKER_API}/api/jobs/${jobId}/events`,
       this.getFetchOptions()
     )
-    
+
     await this.handleResponse(response);
-    
+
     const data = await response.json()
     return data.result
   }
@@ -783,9 +1109,9 @@ class APIService {
       `${WORKER_API}/api/jobs?${params.toString()}`,
       this.getFetchOptions()
     )
-    
+
     await this.handleResponse(response);
-    
+
     const data = await response.json()
     return data.result
   }
@@ -801,13 +1127,176 @@ class APIService {
         credentials: 'include'
       }
     )
-    
+
     await this.handleResponse(response);
-    
+
     const data = await response.json()
     return data.result
+  }
+
+  // ============================================================================
+  // KV METRICS
+  // ============================================================================
+
+  /**
+   * Get KV metrics for a namespace or account-wide
+   */
+  async getMetrics(options: {
+    namespaceId?: string
+    days?: number
+    startDate?: string
+    endDate?: string
+    skipCache?: boolean
+  } = {}): Promise<KVMetricsSummary> {
+    const params = new URLSearchParams()
+    if (options.days !== undefined) params.set('days', options.days.toString())
+    if (options.startDate) params.set('startDate', options.startDate)
+    if (options.endDate) params.set('endDate', options.endDate)
+    if (options.skipCache) params.set('skipCache', 'true')
+
+    const endpoint = options.namespaceId
+      ? `${WORKER_API}/api/metrics/${options.namespaceId}`
+      : `${WORKER_API}/api/metrics`
+
+    const cacheKey = `metrics:${options.namespaceId ?? 'all'}:${params.toString()}`
+
+    // Check cache first unless skipCache is true
+    if (!options.skipCache) {
+      const cached = getFromCache<KVMetricsSummary>(cacheKey, CACHE_TTL.METRICS)
+      if (cached) {
+        return cached
+      }
+    }
+
+    return deduplicateRequest(cacheKey, async () => {
+      const response = await fetchWithBackoff(
+        `${endpoint}?${params.toString()}`,
+        this.getFetchOptions()
+      )
+
+      await this.handleResponse(response)
+
+      const data = await response.json()
+
+      // Store in cache
+      setInCache(cacheKey, data)
+
+      return data
+    })
   }
 }
 
 export const api = new APIService()
 
+// ============================================================================
+// MIGRATION TYPES
+// ============================================================================
+
+export interface Migration {
+  version: number
+  name: string
+  description: string
+}
+
+export interface AppliedMigration {
+  version: number
+  migration_name: string
+  applied_at: string
+}
+
+export interface LegacyInstallationInfo {
+  isLegacy: boolean
+  existingTables: string[]
+  suggestedVersion: number
+}
+
+export interface MigrationStatus {
+  currentVersion: number
+  latestVersion: number
+  pendingMigrations: Migration[]
+  appliedMigrations: AppliedMigration[]
+  isUpToDate: boolean
+  legacy?: LegacyInstallationInfo
+}
+
+export interface MigrationResult {
+  success: boolean
+  migrationsApplied: number
+  currentVersion: number
+  errors: string[]
+}
+
+// ============================================================================
+// MIGRATION API FUNCTIONS
+// ============================================================================
+
+/**
+ * Get current migration status
+ */
+export const getMigrationStatus = async (): Promise<MigrationStatus> => {
+  const response = await fetch(
+    `${WORKER_API}/api/migrations/status`,
+    {
+      method: 'GET',
+      credentials: 'include'
+    }
+  )
+
+  if (!response.ok) {
+    throw new Error(`Failed to get migration status: ${response.status}`)
+  }
+
+  const data = await response.json() as { result: MigrationStatus; success: boolean }
+  if (!data.result) {
+    throw new Error('Invalid response from migration status endpoint')
+  }
+  return data.result
+}
+
+/**
+ * Apply all pending migrations
+ */
+export const applyMigrations = async (): Promise<MigrationResult> => {
+  const response = await fetch(
+    `${WORKER_API}/api/migrations/apply`,
+    {
+      method: 'POST',
+      credentials: 'include'
+    }
+  )
+
+  if (!response.ok) {
+    throw new Error(`Failed to apply migrations: ${response.status}`)
+  }
+
+  const data = await response.json() as { result: MigrationResult; success: boolean }
+  if (!data.result) {
+    throw new Error('Invalid response from migration apply endpoint')
+  }
+  return data.result
+}
+
+/**
+ * Mark migrations as applied for legacy installations
+ */
+export const markLegacyMigrations = async (version: number): Promise<{ markedUpTo: number }> => {
+  const response = await fetch(
+    `${WORKER_API}/api/migrations/mark-legacy`,
+    {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      credentials: 'include',
+      body: JSON.stringify({ version })
+    }
+  )
+
+  if (!response.ok) {
+    throw new Error(`Failed to mark legacy migrations: ${response.status}`)
+  }
+
+  const data = await response.json() as { result: { markedUpTo: number }; success: boolean }
+  if (!data.result) {
+    throw new Error('Invalid response from mark-legacy endpoint')
+  }
+  return data.result
+}

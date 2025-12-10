@@ -1,23 +1,22 @@
 import type { DurableObjectState } from '@cloudflare/workers-types';
-import type { 
-  Env, 
-  JobProgress, 
-  BulkCopyParams, 
-  BulkTTLParams, 
-  BulkTagParams, 
-  BulkDeleteParams 
+import type {
+  Env,
+  JobProgress,
+  BulkCopyParams,
+  BulkTTLParams,
+  BulkTagParams,
+  BulkDeleteParams
 } from '../types';
 import { createCfApiRequest, getD1Binding, auditLog, logJobEvent } from '../utils/helpers';
+import { logWarning, logError, createErrorContext } from '../utils/error-logger';
 
 /**
  * Durable Object for orchestrating bulk KV operations
  */
 export class BulkOperationDO {
-  private state: DurableObjectState;
   private env: Env;
 
-  constructor(state: DurableObjectState, env: Env) {
-    this.state = state;
+  constructor(_state: DurableObjectState, env: Env) {
     this.env = env;
   }
 
@@ -30,10 +29,10 @@ export class BulkOperationDO {
     // Job processing endpoints
     if (url.pathname.startsWith('/process/')) {
       const jobType = url.pathname.split('/')[2];
-      
+
       try {
         const body = await request.json() as Record<string, unknown>;
-        
+
         switch (jobType) {
           case 'bulk-copy':
             await this.processBulkCopy(body as unknown as BulkCopyParams & { jobId: string });
@@ -53,14 +52,14 @@ export class BulkOperationDO {
               headers: { 'Content-Type': 'application/json' }
             });
         }
-        
+
         return new Response(JSON.stringify({ success: true }), {
           headers: { 'Content-Type': 'application/json' }
         });
       } catch (error) {
-        console.error('[BulkOperationDO] Processing error:', error);
-        return new Response(JSON.stringify({ 
-          error: error instanceof Error ? error.message : 'Unknown error' 
+        await logError(this.env, error instanceof Error ? error : String(error), createErrorContext('bulk_operation_do', 'fetch'), false);
+        return new Response(JSON.stringify({
+          error: error instanceof Error ? error.message : 'Unknown error'
         }), {
           status: 500,
           headers: { 'Content-Type': 'application/json' }
@@ -77,7 +76,7 @@ export class BulkOperationDO {
   /**
    * Broadcast progress (no-op: WebSocket support removed, progress tracked via D1 polling)
    */
-   
+
   private broadcastProgress(_progress: JobProgress): void {
     // No-op: Frontend uses HTTP polling instead of WebSockets
     // This method is kept to avoid refactoring all process methods
@@ -87,7 +86,7 @@ export class BulkOperationDO {
    * Update job status in D1
    */
   private async updateJobInDB(
-    jobId: string, 
+    jobId: string,
     updates: {
       status?: string;
       processed_keys?: number;
@@ -135,7 +134,9 @@ export class BulkOperationDO {
         WHERE job_id = ?
       `).bind(...values).run();
     } catch (error) {
-      console.error('[BulkOperationDO] DB update error:', error);
+      logWarning('DB update error', createErrorContext('bulk_operation_do', 'update_job_db', {
+        metadata: { jobId, error: error instanceof Error ? error.message : String(error) }
+      }));
     }
   }
 
@@ -170,7 +171,8 @@ export class BulkOperationDO {
       // Fetch all key values from source
       for (let i = 0; i < keys.length; i++) {
         const keyName = keys[i];
-        
+        if (!keyName) continue;
+
         try {
           const valueRequest = createCfApiRequest(
             `/accounts/${this.env.ACCOUNT_ID}/storage/kv/namespaces/${sourceNamespaceId}/values/${encodeURIComponent(keyName)}`,
@@ -185,15 +187,18 @@ export class BulkOperationDO {
             errorCount++;
           }
         } catch (err) {
-          console.error('[BulkOperationDO] Failed to fetch key:', keyName, err);
+          logWarning(`Failed to fetch key: ${keyName}`, createErrorContext('bulk_operation_do', 'process_bulk_copy', {
+            keyName,
+            metadata: { error: err instanceof Error ? err.message : String(err) }
+          }));
           errorCount++;
         }
 
         // Broadcast progress every 10 keys or on last key
         if ((i + 1) % 10 === 0 || i === keys.length - 1) {
           const percentage = Math.round(((i + 1) / keys.length) * 50); // First 50% is fetching
-          await this.updateJobInDB(jobId, { 
-            processed_keys: i + 1, 
+          await this.updateJobInDB(jobId, {
+            processed_keys: i + 1,
             error_count: errorCount,
             current_key: keyName,
             percentage
@@ -201,12 +206,12 @@ export class BulkOperationDO {
           this.broadcastProgress({
             jobId,
             status: 'running',
-            progress: { 
-              total: keys.length, 
-              processed: i + 1, 
-              errors: errorCount, 
+            progress: {
+              total: keys.length,
+              processed: i + 1,
+              errors: errorCount,
               currentKey: keyName,
-              percentage 
+              percentage
             }
           });
 
@@ -238,26 +243,28 @@ export class BulkOperationDO {
             {
               method: 'PUT',
               body: JSON.stringify(batch),
-        headers: { 'Content-Type': 'application/json' }
-      }
-    );
+              headers: { 'Content-Type': 'application/json' }
+            }
+          );
 
           const bulkResponse = await fetch(bulkRequest);
 
           if (bulkResponse.ok) {
             writeProcessed += batch.length;
           } else {
-            console.error('[BulkOperationDO] Bulk copy failed:', await bulkResponse.text());
+            await logError(this.env, `Bulk copy failed: ${await bulkResponse.text()}`, createErrorContext('bulk_operation_do', 'process_bulk_copy'), false);
             errorCount += batch.length;
           }
         } catch (err) {
-          console.error('[BulkOperationDO] Batch copy error:', err);
+          await logError(this.env, err instanceof Error ? err : String(err), createErrorContext('bulk_operation_do', 'process_bulk_copy', {
+            metadata: { operation: 'batch_copy' }
+          }), false);
           errorCount += batch.length;
         }
 
         // Broadcast progress (second 50% is writing)
         const percentage = 50 + Math.round((writeProcessed / copyData.length) * 50);
-        await this.updateJobInDB(jobId, { 
+        await this.updateJobInDB(jobId, {
           processed_keys: keys.length,
           error_count: errorCount,
           percentage
@@ -265,11 +272,11 @@ export class BulkOperationDO {
         this.broadcastProgress({
           jobId,
           status: 'running',
-          progress: { 
-            total: keys.length, 
-            processed: keys.length, 
+          progress: {
+            total: keys.length,
+            processed: keys.length,
             errors: errorCount,
-            percentage 
+            percentage
           }
         });
 
@@ -287,8 +294,8 @@ export class BulkOperationDO {
       }
 
       // Mark as completed
-      await this.updateJobInDB(jobId, { 
-        status: 'completed', 
+      await this.updateJobInDB(jobId, {
+        status: 'completed',
         processed_keys: writeProcessed,
         error_count: errorCount,
         percentage: 100
@@ -297,11 +304,11 @@ export class BulkOperationDO {
       this.broadcastProgress({
         jobId,
         status: 'completed',
-        progress: { 
-          total: keys.length, 
-          processed: writeProcessed, 
+        progress: {
+          total: keys.length,
+          processed: writeProcessed,
           errors: errorCount,
-          percentage: 100 
+          percentage: 100
         },
         result: { processed: writeProcessed, errors: errorCount }
       });
@@ -319,7 +326,7 @@ export class BulkOperationDO {
         namespace_id: sourceNamespaceId,
         operation: 'bulk_copy',
         user_email: userEmail,
-        details: JSON.stringify({ 
+        details: JSON.stringify({
           target_namespace_id: targetNamespaceId,
           total: keys.length,
           processed: writeProcessed,
@@ -329,10 +336,13 @@ export class BulkOperationDO {
       });
 
     } catch (error) {
-      console.error('[BulkOperationDO] Bulk copy error:', error);
-      
+      await logError(this.env, error instanceof Error ? error : String(error), createErrorContext('bulk_operation_do', 'process_bulk_copy', {
+        namespaceId: sourceNamespaceId,
+        metadata: { jobId }
+      }), false);
+
       await this.updateJobInDB(jobId, { status: 'failed' });
-      
+
       this.broadcastProgress({
         jobId,
         status: 'failed',
@@ -380,7 +390,8 @@ export class BulkOperationDO {
       // Update TTL for each key
       for (let i = 0; i < keys.length; i++) {
         const keyName = keys[i];
-        
+        if (!keyName) continue;
+
         try {
           // Get current value
           const getRequest = createCfApiRequest(
@@ -415,14 +426,18 @@ export class BulkOperationDO {
             errorCount++;
           }
         } catch (err) {
-          console.error('[BulkOperationDO] Failed to update TTL for key:', keyName, err);
+          logWarning(`Failed to update TTL for key: ${keyName}`, createErrorContext('bulk_operation_do', 'process_bulk_ttl', {
+            keyName,
+            namespaceId,
+            metadata: { error: err instanceof Error ? err.message : String(err) }
+          }));
           errorCount++;
         }
 
         // Broadcast progress every 10 keys or on last key
         if ((i + 1) % 10 === 0 || i === keys.length - 1) {
           const percentage = Math.round(((i + 1) / keys.length) * 100);
-          await this.updateJobInDB(jobId, { 
+          await this.updateJobInDB(jobId, {
             processed_keys: i + 1,
             error_count: errorCount,
             current_key: keyName,
@@ -431,12 +446,12 @@ export class BulkOperationDO {
           this.broadcastProgress({
             jobId,
             status: 'running',
-            progress: { 
-              total: keys.length, 
-              processed: i + 1, 
+            progress: {
+              total: keys.length,
+              processed: i + 1,
               errors: errorCount,
               currentKey: keyName,
-              percentage 
+              percentage
             }
           });
 
@@ -455,7 +470,7 @@ export class BulkOperationDO {
       }
 
       // Mark as completed
-      await this.updateJobInDB(jobId, { 
+      await this.updateJobInDB(jobId, {
         status: 'completed',
         processed_keys: processedCount,
         error_count: errorCount,
@@ -465,11 +480,11 @@ export class BulkOperationDO {
       this.broadcastProgress({
         jobId,
         status: 'completed',
-        progress: { 
-          total: keys.length, 
-          processed: processedCount, 
+        progress: {
+          total: keys.length,
+          processed: processedCount,
           errors: errorCount,
-          percentage: 100 
+          percentage: 100
         },
         result: { processed: processedCount, errors: errorCount }
       });
@@ -487,7 +502,7 @@ export class BulkOperationDO {
         namespace_id: namespaceId,
         operation: 'bulk_ttl_update',
         user_email: userEmail,
-        details: JSON.stringify({ 
+        details: JSON.stringify({
           ttl,
           total: keys.length,
           processed: processedCount,
@@ -497,10 +512,13 @@ export class BulkOperationDO {
       });
 
     } catch (error) {
-      console.error('[BulkOperationDO] Bulk TTL error:', error);
-      
+      await logError(this.env, error instanceof Error ? error : String(error), createErrorContext('bulk_operation_do', 'process_bulk_ttl', {
+        namespaceId,
+        metadata: { jobId }
+      }), false);
+
       await this.updateJobInDB(jobId, { status: 'failed' });
-      
+
       this.broadcastProgress({
         jobId,
         status: 'failed',
@@ -547,6 +565,7 @@ export class BulkOperationDO {
 
       for (let i = 0; i < keys.length; i++) {
         const keyName = keys[i];
+        if (!keyName) continue;
 
         try {
           if (!db) {
@@ -560,9 +579,9 @@ export class BulkOperationDO {
           ).bind(namespaceId, keyName).first();
 
           let existingTags: string[] = [];
-          if (existing && existing.tags) {
+          if (existing && existing['tags']) {
             try {
-              existingTags = JSON.parse(existing.tags as string) as string[];
+              existingTags = JSON.parse(existing['tags'] as string) as string[];
             } catch {
               existingTags = [];
             }
@@ -594,14 +613,18 @@ export class BulkOperationDO {
 
           processedCount++;
         } catch (err) {
-          console.error('[BulkOperationDO] Failed to tag key:', keyName, err);
+          logWarning(`Failed to tag key: ${keyName}`, createErrorContext('bulk_operation_do', 'process_bulk_tag', {
+            keyName,
+            namespaceId,
+            metadata: { error: err instanceof Error ? err.message : String(err) }
+          }));
           errorCount++;
         }
 
         // Broadcast progress every 10 keys or on last key
         if ((i + 1) % 10 === 0 || i === keys.length - 1) {
           const percentage = Math.round(((i + 1) / keys.length) * 100);
-          await this.updateJobInDB(jobId, { 
+          await this.updateJobInDB(jobId, {
             processed_keys: i + 1,
             error_count: errorCount,
             current_key: keyName,
@@ -610,12 +633,12 @@ export class BulkOperationDO {
           this.broadcastProgress({
             jobId,
             status: 'running',
-            progress: { 
-              total: keys.length, 
-              processed: i + 1, 
+            progress: {
+              total: keys.length,
+              processed: i + 1,
               errors: errorCount,
               currentKey: keyName,
-              percentage 
+              percentage
             }
           });
 
@@ -634,7 +657,7 @@ export class BulkOperationDO {
       }
 
       // Mark as completed
-      await this.updateJobInDB(jobId, { 
+      await this.updateJobInDB(jobId, {
         status: 'completed',
         processed_keys: processedCount,
         error_count: errorCount,
@@ -644,11 +667,11 @@ export class BulkOperationDO {
       this.broadcastProgress({
         jobId,
         status: 'completed',
-        progress: { 
-          total: keys.length, 
-          processed: processedCount, 
+        progress: {
+          total: keys.length,
+          processed: processedCount,
           errors: errorCount,
-          percentage: 100 
+          percentage: 100
         },
         result: { processed: processedCount, errors: errorCount }
       });
@@ -666,7 +689,7 @@ export class BulkOperationDO {
         namespace_id: namespaceId,
         operation: 'bulk_tag',
         user_email: userEmail,
-        details: JSON.stringify({ 
+        details: JSON.stringify({
           operation,
           tags,
           total: keys.length,
@@ -677,10 +700,13 @@ export class BulkOperationDO {
       });
 
     } catch (error) {
-      console.error('[BulkOperationDO] Bulk tag error:', error);
-      
+      await logError(this.env, error instanceof Error ? error : String(error), createErrorContext('bulk_operation_do', 'process_bulk_tag', {
+        namespaceId,
+        metadata: { jobId }
+      }), false);
+
       await this.updateJobInDB(jobId, { status: 'failed' });
-      
+
       this.broadcastProgress({
         jobId,
         status: 'failed',
@@ -727,7 +753,7 @@ export class BulkOperationDO {
 
       // Delete keys using bulk API
       const batchSize = 10000;
-      
+
       for (let i = 0; i < keys.length; i += batchSize) {
         const batch = keys.slice(i, i + batchSize);
 
@@ -746,18 +772,40 @@ export class BulkOperationDO {
 
           if (bulkResponse.ok) {
             processedCount += batch.length;
+            
+            // Also delete D1 metadata entries for these keys
+            if (db) {
+              try {
+                // Delete metadata entries in batches (SQLite has limits on parameters)
+                const placeholders = batch.map(() => '?').join(',');
+                await db.prepare(
+                  `DELETE FROM key_metadata WHERE namespace_id = ? AND key_name IN (${placeholders})`
+                ).bind(namespaceId, ...batch).run();
+              } catch (metaErr) {
+                logWarning('Failed to delete D1 metadata entries', createErrorContext('bulk_operation_do', 'process_bulk_delete', {
+                  namespaceId,
+                  metadata: { error: metaErr instanceof Error ? metaErr.message : String(metaErr) }
+                }));
+                // Don't fail the operation if metadata cleanup fails
+              }
+            }
           } else {
-            console.error('[BulkOperationDO] Bulk delete failed:', await bulkResponse.text());
+            await logError(this.env, `Bulk delete failed: ${await bulkResponse.text()}`, createErrorContext('bulk_operation_do', 'process_bulk_delete', {
+              namespaceId
+            }), false);
             errorCount += batch.length;
           }
         } catch (err) {
-          console.error('[BulkOperationDO] Batch delete error:', err);
+          await logError(this.env, err instanceof Error ? err : String(err), createErrorContext('bulk_operation_do', 'process_bulk_delete', {
+            namespaceId,
+            metadata: { operation: 'batch_delete' }
+          }), false);
           errorCount += batch.length;
         }
 
         // Broadcast progress
         const percentage = Math.round(((i + batch.length) / keys.length) * 100);
-        await this.updateJobInDB(jobId, { 
+        await this.updateJobInDB(jobId, {
           processed_keys: i + batch.length,
           error_count: errorCount,
           percentage
@@ -765,11 +813,11 @@ export class BulkOperationDO {
         this.broadcastProgress({
           jobId,
           status: 'running',
-          progress: { 
-            total: keys.length, 
-            processed: i + batch.length, 
+          progress: {
+            total: keys.length,
+            processed: i + batch.length,
             errors: errorCount,
-            percentage 
+            percentage
           }
         });
 
@@ -787,7 +835,7 @@ export class BulkOperationDO {
       }
 
       // Mark as completed
-      await this.updateJobInDB(jobId, { 
+      await this.updateJobInDB(jobId, {
         status: 'completed',
         processed_keys: processedCount,
         error_count: errorCount,
@@ -797,11 +845,11 @@ export class BulkOperationDO {
       this.broadcastProgress({
         jobId,
         status: 'completed',
-        progress: { 
-          total: keys.length, 
-          processed: processedCount, 
+        progress: {
+          total: keys.length,
+          processed: processedCount,
           errors: errorCount,
-          percentage: 100 
+          percentage: 100
         },
         result: { processed: processedCount, errors: errorCount }
       });
@@ -819,7 +867,7 @@ export class BulkOperationDO {
         namespace_id: namespaceId,
         operation: 'bulk_delete',
         user_email: userEmail,
-        details: JSON.stringify({ 
+        details: JSON.stringify({
           total: keys.length,
           processed: processedCount,
           errors: errorCount,
@@ -828,10 +876,13 @@ export class BulkOperationDO {
       });
 
     } catch (error) {
-      console.error('[BulkOperationDO] Bulk delete error:', error);
-      
+      await logError(this.env, error instanceof Error ? error : String(error), createErrorContext('bulk_operation_do', 'process_bulk_delete', {
+        namespaceId,
+        metadata: { jobId }
+      }), false);
+
       await this.updateJobInDB(jobId, { status: 'failed' });
-      
+
       this.broadcastProgress({
         jobId,
         status: 'failed',

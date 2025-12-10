@@ -1,11 +1,11 @@
 # KV Manager - Docker Edition
 
-Last Updated December 8, 2025 - Production/Stable Version 1.0.0 
+Last Updated December 9, 2025 - Production/Stable Version 2.0.0 
 
 [![GitHub](https://img.shields.io/badge/GitHub-neverinfamous/kv--manager-blue?logo=github)](https://github.com/neverinfamous/kv-manager)
 [![Docker Pulls](https://img.shields.io/docker/pulls/writenotenow/kv-manager)](https://hub.docker.com/r/writenotenow/kv-manager)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](https://opensource.org/licenses/MIT)
-![Version](https://img.shields.io/badge/version-v1.0.0-green)
+![Version](https://img.shields.io/badge/version-v2.0.0-green)
 ![Status](https://img.shields.io/badge/status-Production%2FStable-brightgreen)
 [![Security](https://img.shields.io/badge/Security-Enhanced-green.svg)](https://github.com/neverinfamous/kv-manager/blob/main/SECURITY.md)
 [![CodeQL](https://img.shields.io/badge/CodeQL-Passing-brightgreen.svg)](https://github.com/neverinfamous/kv-manager/security/code-scanning)
@@ -23,7 +23,7 @@ A full-featured management platform for Cloudflare Workers KV, designed for engi
 
 ## ✨ Key Features
 
-- **🗂️ Namespace & Key Management** - Full CRUD operations with cursor-based pagination
+- **🗂️ Namespace & Key Management** - Full CRUD operations with cursor-based pagination and Grid/List view toggle
 - **📊 Dual Metadata System** - KV Native (1024 bytes) + D1 Custom (unlimited) metadata
 - **🏷️ Tag Organization** - Unlimited tags stored in D1 for easy filtering and search
 - **🔍 Advanced Search** - Cross-namespace search by key name, tags, and custom metadata
@@ -31,6 +31,7 @@ A full-featured management platform for Cloudflare Workers KV, designed for engi
 - **📥 Import/Export** - JSON/NDJSON support with collision handling
 - **☁️ R2 Backup & Restore** - Cloud-native backup with batch operations
 - **📈 Job History** - Complete audit trail with event timelines and advanced filtering
+- **📊 Metrics Dashboard** - View KV analytics, operation counts, and latency percentiles
 - **🔐 Enterprise Auth** - Cloudflare Access (Zero Trust) integration
 - **🎨 Modern UI** - Dark/light themes, responsive design, built with React + Tailwind CSS
 
@@ -114,7 +115,7 @@ docker-compose up -d  # or docker stop/rm/run
 ```yaml
 services:
   kv-manager:
-    image: writenotenow/kv-manager:1.0.0
+    image: writenotenow/kv-manager:2.0.0
 ```
 
 ## 📦 Image Details
@@ -125,7 +126,7 @@ services:
 - **User:** Non-root
 - **Health:** `/health` endpoint
 
-**Available tags:** `latest`, `1.0.0`, `sha-XXXXXX`
+**Available tags:** `latest`, `2.0.0`, `sha-XXXXXX`
 
 ## 📚 Resources
 

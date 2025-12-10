@@ -1,5 +1,6 @@
 import type { Env, APIResponse } from '../types';
 import { getD1Binding } from '../utils/helpers';
+import { logInfo, logError, createErrorContext } from '../utils/error-logger';
 
 export async function handleAuditRoutes(
   request: Request,
@@ -7,20 +8,118 @@ export async function handleAuditRoutes(
   url: URL,
   corsHeaders: HeadersInit,
   isLocalDev: boolean,
-  _userEmail: string  
+  _userEmail: string
 ): Promise<Response> {
   const db = getD1Binding(env);
 
   try {
-    // GET /api/audit/:namespaceId - Get audit log for namespace
-    const namespaceMatch = url.pathname.match(/^\/api\/audit\/([^/]+)$/);
-    if (namespaceMatch && request.method === 'GET') {
-      const namespaceId = namespaceMatch[1];
+    // GET /api/audit/all - Get all audit logs across all namespaces
+    if (url.pathname === '/api/audit/all' && request.method === 'GET') {
       const limit = parseInt(url.searchParams.get('limit') || '100');
       const offset = parseInt(url.searchParams.get('offset') || '0');
       const operationType = url.searchParams.get('operation');
 
-      console.log('[Audit] Getting audit log for namespace:', namespaceId, 'limit:', limit, 'offset:', offset);
+      logInfo('Getting all audit logs', createErrorContext('audit', 'get_all_logs', {
+        metadata: { limit, offset, operationType: operationType || 'all' }
+      }));
+
+      if (isLocalDev || !db) {
+        // Return mock audit log with namespace operations
+        const mockAuditLog = [
+          {
+            id: 1,
+            namespace_id: 'deleted-namespace-123',
+            key_name: null,
+            operation: 'delete_namespace',
+            user_email: 'admin@example.com',
+            timestamp: new Date(Date.now() - 1800000).toISOString(),
+            details: JSON.stringify({ title: 'old-cache' })
+          },
+          {
+            id: 2,
+            namespace_id: 'mock-namespace-1',
+            key_name: 'test-key-1',
+            operation: 'create',
+            user_email: 'user@example.com',
+            timestamp: new Date(Date.now() - 3600000).toISOString(),
+            details: JSON.stringify({ source: 'web' })
+          },
+          {
+            id: 3,
+            namespace_id: 'mock-namespace-2',
+            key_name: null,
+            operation: 'create_namespace',
+            user_email: 'admin@example.com',
+            timestamp: new Date(Date.now() - 7200000).toISOString(),
+            details: JSON.stringify({ title: 'new-cache' })
+          },
+          {
+            id: 4,
+            namespace_id: 'mock-namespace-1',
+            key_name: null,
+            operation: 'r2_backup',
+            user_email: 'user@example.com',
+            timestamp: new Date(Date.now() - 86400000).toISOString(),
+            details: JSON.stringify({ format: 'json', keys_count: 150 })
+          }
+        ];
+
+        const filtered = operationType
+          ? mockAuditLog.filter(log => log.operation === operationType)
+          : mockAuditLog;
+
+        const response: APIResponse = {
+          success: true,
+          result: filtered.slice(offset, offset + limit)
+        };
+
+        return new Response(JSON.stringify(response), {
+          headers: { 'Content-Type': 'application/json', ...corsHeaders }
+        });
+      }
+
+      // Build query - no namespace filter
+      let sql = 'SELECT * FROM audit_log WHERE 1=1';
+      const bindings: (string | number)[] = [];
+
+      if (operationType) {
+        sql += ' AND operation = ?';
+        bindings.push(operationType);
+      }
+
+      sql += ' ORDER BY timestamp DESC LIMIT ? OFFSET ?';
+      bindings.push(limit, offset);
+
+      const results = await db.prepare(sql).bind(...bindings).all();
+
+      const response: APIResponse = {
+        success: true,
+        result: results.results || []
+      };
+
+      return new Response(JSON.stringify(response), {
+        headers: { 'Content-Type': 'application/json', ...corsHeaders }
+      });
+    }
+
+    // GET /api/audit/:namespaceId - Get audit log for namespace
+    const namespaceMatch = url.pathname.match(/^\/api\/audit\/([^/]+)$/);
+    if (namespaceMatch && request.method === 'GET') {
+      const namespaceId = namespaceMatch[1];
+      if (!namespaceId) {
+        return new Response(JSON.stringify({ error: 'Invalid namespace ID' }), {
+          status: 400,
+          headers: { 'Content-Type': 'application/json', ...corsHeaders }
+        });
+      }
+      const limit = parseInt(url.searchParams.get('limit') || '100');
+      const offset = parseInt(url.searchParams.get('offset') || '0');
+      const operationType = url.searchParams.get('operation');
+
+      logInfo('Getting audit log for namespace', createErrorContext('audit', 'get_log', {
+        ...(namespaceId !== undefined && { namespaceId }),
+        metadata: { limit, offset }
+      }));
 
       if (isLocalDev || !db) {
         // Return mock audit log
@@ -54,7 +153,7 @@ export async function handleAuditRoutes(
           }
         ];
 
-        const filtered = operationType 
+        const filtered = operationType
           ? mockAuditLog.filter(log => log.operation === operationType)
           : mockAuditLog;
 
@@ -95,12 +194,22 @@ export async function handleAuditRoutes(
     // GET /api/audit/user/:userEmail - Get audit log for user
     const userMatch = url.pathname.match(/^\/api\/audit\/user\/([^/]+)$/);
     if (userMatch && request.method === 'GET') {
-      const targetUserEmail = decodeURIComponent(userMatch[1]);
+      const userEmailEncoded = userMatch[1];
+      if (!userEmailEncoded) {
+        return new Response(JSON.stringify({ error: 'Invalid user email' }), {
+          status: 400,
+          headers: { 'Content-Type': 'application/json', ...corsHeaders }
+        });
+      }
+      const targetUserEmail = decodeURIComponent(userEmailEncoded);
       const limit = parseInt(url.searchParams.get('limit') || '100');
       const offset = parseInt(url.searchParams.get('offset') || '0');
       const operationType = url.searchParams.get('operation');
 
-      console.log('[Audit] Getting audit log for user:', targetUserEmail, 'limit:', limit, 'offset:', offset);
+      logInfo('Getting audit log for user', createErrorContext('audit', 'get_user_log', {
+        userId: targetUserEmail,
+        metadata: { limit, offset }
+      }));
 
       if (isLocalDev || !db) {
         // Return mock audit log
@@ -125,7 +234,7 @@ export async function handleAuditRoutes(
           }
         ];
 
-        const filtered = operationType 
+        const filtered = operationType
           ? mockAuditLog.filter(log => log.operation === operationType)
           : mockAuditLog;
 
@@ -169,7 +278,7 @@ export async function handleAuditRoutes(
       headers: { 'Content-Type': 'application/json', ...corsHeaders }
     });
   } catch (error) {
-    console.error('[Audit] Error:', error);
+    await logError(env, error instanceof Error ? error : String(error), createErrorContext('audit', 'handle_request'), isLocalDev);
     return new Response(
       JSON.stringify({ error: 'Internal Server Error' }),
       {

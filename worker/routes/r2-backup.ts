@@ -1,5 +1,6 @@
 import type { Env, APIResponse, R2BackupListItem } from '../types';
 import { getD1Binding } from '../utils/helpers';
+import { logInfo, logError, createErrorContext } from '../utils/error-logger';
 
 export async function handleR2BackupRoutes(
   request: Request,
@@ -19,16 +20,18 @@ export async function handleR2BackupRoutes(
       const format = url.searchParams.get('format') || 'json';
 
       if (!namespaceIds || !Array.isArray(namespaceIds) || namespaceIds.length === 0) {
-        return new Response(JSON.stringify({ 
+        return new Response(JSON.stringify({
           success: false,
-          error: 'Invalid request: namespace_ids must be a non-empty array' 
+          error: 'Invalid request: namespace_ids must be a non-empty array'
         }), {
           status: 400,
           headers: { 'Content-Type': 'application/json', ...corsHeaders }
         });
       }
 
-      console.log('[R2Backup] Starting batch backup for', namespaceIds.length, 'namespaces, format:', format);
+      logInfo('Starting batch backup', createErrorContext('r2_backup', 'batch_backup', {
+        metadata: { namespaceCount: namespaceIds.length, format }
+      }));
 
       if (isLocalDev || !env.BACKUP_BUCKET) {
         const jobId = `r2-batch-backup-${Date.now()}`;
@@ -55,8 +58,8 @@ export async function handleR2BackupRoutes(
           INSERT INTO bulk_jobs (job_id, namespace_id, operation_type, status, total_keys, started_at, user_email, metadata)
           VALUES (?, ?, 'batch_r2_backup', 'queued', ?, CURRENT_TIMESTAMP, ?, ?)
         `).bind(
-          jobId, 
-          namespaceIds[0], 
+          jobId,
+          namespaceIds[0],
           namespaceIds.length,
           userEmail,
           JSON.stringify({ namespace_ids: namespaceIds })
@@ -79,11 +82,14 @@ export async function handleR2BackupRoutes(
         })
       });
 
-      console.log('[R2Backup] Starting batch backup processing in DO for job:', jobId);
+      logInfo('Starting batch backup processing in DO', createErrorContext('r2_backup', 'batch_backup', {
+        metadata: { jobId }
+      }));
 
-      // @ts-expect-error - Request types are compatible at runtime
       const doResponse = await stub.fetch(doRequest);
-      console.log('[R2Backup] Batch backup DO processing initiated, response status:', doResponse.status);
+      logInfo('Batch backup DO processing initiated', createErrorContext('r2_backup', 'batch_backup', {
+        metadata: { jobId, responseStatus: doResponse.status }
+      }));
 
       // Return immediately with job info
       const response: APIResponse = {
@@ -104,20 +110,22 @@ export async function handleR2BackupRoutes(
     if (url.pathname === '/api/r2-restore/batch' && request.method === 'POST') {
       const body = await request.json() as { restore_map: Record<string, string> };
       const restoreMap = body.restore_map;
-      
+
       if (!restoreMap || typeof restoreMap !== 'object' || Object.keys(restoreMap).length === 0) {
-        return new Response(JSON.stringify({ 
+        return new Response(JSON.stringify({
           success: false,
-          error: 'Invalid request: restore_map must be a non-empty object' 
+          error: 'Invalid request: restore_map must be a non-empty object'
         }), {
           status: 400,
           headers: { 'Content-Type': 'application/json', ...corsHeaders }
         });
       }
-      
+
       const namespaceIds = Object.keys(restoreMap);
 
-      console.log('[R2Restore] Starting batch restore for', namespaceIds.length, 'namespaces');
+      logInfo('Starting batch restore', createErrorContext('r2_restore', 'batch_restore', {
+        metadata: { namespaceCount: namespaceIds.length }
+      }));
 
       if (isLocalDev || !env.BACKUP_BUCKET) {
         const jobId = `r2-batch-restore-${Date.now()}`;
@@ -139,9 +147,9 @@ export async function handleR2BackupRoutes(
       for (const [nsId, backupPath] of Object.entries(restoreMap)) {
         const backupObject = await env.BACKUP_BUCKET.head(backupPath);
         if (!backupObject) {
-          return new Response(JSON.stringify({ 
+          return new Response(JSON.stringify({
             success: false,
-            error: `Backup not found for namespace ${nsId}: ${backupPath}` 
+            error: `Backup not found for namespace ${nsId}: ${backupPath}`
           }), {
             status: 404,
             headers: { 'Content-Type': 'application/json', ...corsHeaders }
@@ -181,11 +189,14 @@ export async function handleR2BackupRoutes(
         })
       });
 
-      console.log('[R2Restore] Starting batch restore processing in DO for job:', jobId);
+      logInfo('Starting batch restore processing in DO', createErrorContext('r2_restore', 'batch_restore', {
+        metadata: { jobId }
+      }));
 
-      // @ts-expect-error - Request types are compatible at runtime
       const doResponse = await stub.fetch(doRequest);
-      console.log('[R2Restore] Batch restore DO processing initiated, response status:', doResponse.status);
+      logInfo('Batch restore DO processing initiated', createErrorContext('r2_restore', 'batch_restore', {
+        metadata: { jobId, responseStatus: doResponse.status }
+      }));
 
       // Return immediately with job info
       const response: APIResponse = {
@@ -207,7 +218,9 @@ export async function handleR2BackupRoutes(
     if (listMatch && request.method === 'GET') {
       const namespaceId = listMatch[1];
 
-      console.log('[R2Backup] Listing backups for namespace:', namespaceId);
+      logInfo('Listing backups for namespace', createErrorContext('r2_backup', 'list_backups', {
+        ...(namespaceId !== undefined && { namespaceId })
+      }));
 
       if (isLocalDev || !env.BACKUP_BUCKET) {
         // Return mock backups for local dev
@@ -270,7 +283,10 @@ export async function handleR2BackupRoutes(
       const namespaceId = backupMatch[1];
       const format = url.searchParams.get('format') || 'json';
 
-      console.log('[R2Backup] Starting backup for namespace:', namespaceId, 'format:', format);
+      logInfo('Starting backup for namespace', createErrorContext('r2_backup', 'start_backup', {
+        ...(namespaceId !== undefined && { namespaceId }),
+        metadata: { format }
+      }));
 
       if (isLocalDev || !env.BACKUP_BUCKET) {
         const jobId = `r2-backup-${Date.now()}`;
@@ -315,12 +331,15 @@ export async function handleR2BackupRoutes(
         })
       });
 
-      console.log('[R2Backup] Starting async processing in DO for job:', jobId);
+      logInfo('Starting async processing in DO', createErrorContext('r2_backup', 'start_backup', {
+        metadata: { jobId }
+      }));
 
       // Start processing - await to ensure the request is actually sent
-      // @ts-expect-error - Request types are compatible at runtime
       const doResponse = await stub.fetch(doRequest);
-      console.log('[R2Backup] DO processing initiated, response status:', doResponse.status);
+      logInfo('DO processing initiated', createErrorContext('r2_backup', 'start_backup', {
+        metadata: { jobId, responseStatus: doResponse.status }
+      }));
 
       // Return immediately with job info
       const response: APIResponse = {
@@ -344,7 +363,10 @@ export async function handleR2BackupRoutes(
       const body = await request.json() as { backupPath: string };
       const backupPath = body.backupPath;
 
-      console.log('[R2Restore] Starting restore for namespace:', namespaceId, 'from:', backupPath);
+      logInfo('Starting restore for namespace', createErrorContext('r2_restore', 'start_restore', {
+        ...(namespaceId !== undefined && { namespaceId }),
+        metadata: { backupPath }
+      }));
 
       if (isLocalDev || !env.BACKUP_BUCKET) {
         const jobId = `r2-restore-${Date.now()}`;
@@ -365,9 +387,9 @@ export async function handleR2BackupRoutes(
       // Verify backup exists
       const backupObject = await env.BACKUP_BUCKET.head(backupPath);
       if (!backupObject) {
-        return new Response(JSON.stringify({ 
+        return new Response(JSON.stringify({
           success: false,
-          error: 'Backup not found' 
+          error: 'Backup not found'
         }), {
           status: 404,
           headers: { 'Content-Type': 'application/json', ...corsHeaders }
@@ -401,12 +423,15 @@ export async function handleR2BackupRoutes(
         })
       });
 
-      console.log('[R2Restore] Starting async processing in DO for job:', jobId);
+      logInfo('Starting async processing in DO', createErrorContext('r2_restore', 'start_restore', {
+        metadata: { jobId }
+      }));
 
       // Await to ensure the request is actually sent
-      // @ts-expect-error - Request types are compatible at runtime
       const doResponse = await stub.fetch(doRequest);
-      console.log('[R2Restore] DO processing initiated, response status:', doResponse.status);
+      logInfo('DO processing initiated', createErrorContext('r2_restore', 'start_restore', {
+        metadata: { jobId, responseStatus: doResponse.status }
+      }));
 
       // Return immediately with job info
       const response: APIResponse = {
@@ -429,14 +454,9 @@ export async function handleR2BackupRoutes(
       headers: { 'Content-Type': 'application/json', ...corsHeaders }
     });
   } catch (error) {
-    console.error('[R2Backup] Error:', error);
-    // Log detailed error information but don't expose to users
-    if (error instanceof Error) {
-      console.error('[R2Backup] Error message:', error.message);
-      console.error('[R2Backup] Error stack:', error.stack);
-    }
+    await logError(env, error instanceof Error ? error : String(error), createErrorContext('r2_backup', 'handle_request'), isLocalDev);
     return new Response(
-      JSON.stringify({ 
+      JSON.stringify({
         success: false,
         error: error instanceof Error ? error.message : 'Internal Server Error'
       }),

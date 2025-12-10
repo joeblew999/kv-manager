@@ -5,7 +5,7 @@
  */
 
 import type { Env, Webhook, WebhookEventType, WebhookPayload } from '../types'
-import { logInfo } from './error-logger'
+import { logInfo, logWarning, createErrorContext } from './error-logger'
 
 /**
  * Result of sending a webhook
@@ -96,26 +96,45 @@ export async function sendWebhook(
  * Get all enabled webhooks for a specific event type
  */
 export async function getWebhooksForEvent(
-  db: D1Database,
+  db: import('@cloudflare/workers-types').D1Database,
   event: WebhookEventType
 ): Promise<Webhook[]> {
   try {
     const result = await db.prepare(
       'SELECT * FROM webhooks WHERE enabled = 1'
-    ).all<Webhook>()
+    ).all<import('../types').WebhookDB>()
 
-    // Filter webhooks that are subscribed to this event
-    return result.results.filter((webhook) => {
+    // Filter webhooks that are subscribed to this event and convert to Webhook type
+    const webhooks: Webhook[] = [];
+    for (const webhookDB of result.results) {
       try {
-        const events = JSON.parse(webhook.events) as string[]
-        return events.includes(event)
+        const events = JSON.parse(webhookDB.events) as string[]
+        if (events.includes(event)) {
+          const webhook: Webhook = {
+            id: webhookDB.id,
+            url: webhookDB.url,
+            events: events as WebhookEventType[],
+            enabled: webhookDB.enabled === 1,
+            created_at: webhookDB.created_at
+          };
+          if (webhookDB.secret) {
+            webhook.secret = webhookDB.secret;
+          }
+          if (webhookDB.updated_at) {
+            webhook.updated_at = webhookDB.updated_at;
+          }
+          webhooks.push(webhook);
+        }
       } catch {
-        return false
+        // Skip invalid webhook
       }
-    })
+    }
+    return webhooks;
   } catch (error) {
-    // Log locally - can't use logError here due to circular dependency
-    console.error('[ERROR] [webhooks] [WEBHOOK_GET_FAILED]', error instanceof Error ? error.message : String(error))
+    // Using logWarning instead of logError to avoid circular dependency
+    logWarning('Failed to get webhooks for event', createErrorContext('webhooks', 'get_webhooks', {
+      metadata: { event, error: error instanceof Error ? error.message : String(error) }
+    }))
     return []
   }
 }
@@ -141,7 +160,7 @@ export async function triggerWebhooks(
 
   try {
     const webhooks = await getWebhooksForEvent(env.METADATA, event)
-    
+
     if (webhooks.length === 0) {
       return
     }
@@ -157,20 +176,23 @@ export async function triggerWebhooks(
       try {
         const result = await sendWebhook(webhook, event, data)
         if (!result.success) {
-          // Log locally - can't use logError here due to circular dependency
-          console.error(`[ERROR] [webhooks] [WEBHOOK_SEND_FAILED] ${webhook.name}: ${result.error ?? 'unknown'}`)
+          logWarning('Webhook send failed', createErrorContext('webhooks', 'send', {
+            metadata: { webhookId: webhook.id, error: result.error ?? 'unknown' }
+          }))
         }
       } catch (error) {
-        // Log locally - can't use logError here due to circular dependency
-        console.error(`[ERROR] [webhooks] [WEBHOOK_SEND_ERROR] ${webhook.name}:`, error instanceof Error ? error.message : String(error))
+        logWarning('Webhook send error', createErrorContext('webhooks', 'send', {
+          metadata: { webhookId: webhook.id, error: error instanceof Error ? error.message : String(error) }
+        }))
       }
     })
 
     // Fire and forget
     void Promise.all(promises)
   } catch (error) {
-    // Log locally - can't use logError here due to circular dependency
-    console.error('[ERROR] [webhooks] [WEBHOOK_TRIGGER_ERROR]', error instanceof Error ? error.message : String(error))
+    logWarning('Webhook trigger error', createErrorContext('webhooks', 'trigger', {
+      metadata: { event, error: error instanceof Error ? error.message : String(error) }
+    }))
   }
 }
 

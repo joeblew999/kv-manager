@@ -4,7 +4,7 @@
  * CRUD operations for webhook configuration.
  */
 
-import type { Env, APIResponse, Webhook, WebhookTestResult } from '../types'
+import type { Env, APIResponse, Webhook, WebhookDB, WebhookTestResult } from '../types'
 import { logError } from '../utils/error-logger'
 
 /**
@@ -17,7 +17,6 @@ interface WebhookBody {
   events?: string[]
   enabled?: boolean
 }
-import type { CorsHeaders } from '../utils/cors'
 import { sendWebhook } from '../utils/webhooks'
 
 /**
@@ -35,16 +34,34 @@ function nowISO(): string {
 }
 
 /**
+ * Convert WebhookDB to Webhook
+ */
+function dbToWebhook(db: WebhookDB): Webhook {
+  const webhook: Webhook = {
+    id: db.id,
+    url: db.url,
+    events: JSON.parse(db.events),
+    enabled: db.enabled === 1,
+    created_at: db.created_at
+  };
+  if (db.secret) {
+    webhook.secret = db.secret;
+  }
+  if (db.updated_at) {
+    webhook.updated_at = db.updated_at;
+  }
+  return webhook;
+}
+
+/**
  * Mock webhooks for local development
  */
 const MOCK_WEBHOOKS: Webhook[] = [
   {
     id: 'whk_mock1',
-    name: 'Slack Notifications',
     url: 'https://hooks.slack.com/services/xxx/yyy/zzz',
-    secret: null,
-    events: JSON.stringify(['job_failed', 'backup_complete']),
-    enabled: 1,
+    events: ['job.failed', 'job.completed'],
+    enabled: true,
     created_at: '2025-01-01T00:00:00Z',
     updated_at: '2025-01-01T00:00:00Z',
   },
@@ -54,7 +71,7 @@ export async function handleWebhookRoutes(
   request: Request,
   env: Env,
   url: URL,
-  corsHeaders: CorsHeaders,
+  corsHeaders: HeadersInit,
   isLocalDev: boolean,
   _userEmail: string
 ): Promise<Response | null> {
@@ -116,7 +133,7 @@ export async function handleWebhookRoutes(
 /**
  * JSON response helper
  */
-function jsonResponse(data: APIResponse | Record<string, unknown>, corsHeaders: CorsHeaders, status = 200): Response {
+function jsonResponse(data: APIResponse | Record<string, unknown>, corsHeaders: HeadersInit, status = 200): Response {
   return new Response(JSON.stringify(data), {
     status,
     headers: { 'Content-Type': 'application/json', ...corsHeaders },
@@ -128,7 +145,7 @@ function jsonResponse(data: APIResponse | Record<string, unknown>, corsHeaders: 
  */
 async function listWebhooks(
   env: Env,
-  corsHeaders: CorsHeaders,
+  corsHeaders: HeadersInit,
   isLocalDev: boolean
 ): Promise<Response> {
   if (isLocalDev) {
@@ -138,15 +155,16 @@ async function listWebhooks(
   try {
     const result = await env.METADATA.prepare(
       'SELECT * FROM webhooks ORDER BY created_at DESC'
-    ).all<Webhook>()
+    ).all<WebhookDB>()
 
-    return jsonResponse({ success: true, result: { webhooks: result.results } }, corsHeaders)
+    const webhooks = result.results.map(dbToWebhook)
+    return jsonResponse({ success: true, result: { webhooks } }, corsHeaders)
   } catch (error) {
     void logError(env, error instanceof Error ? error : String(error), {
       module: 'webhooks',
       operation: 'list'
     }, isLocalDev)
-    
+
     // Check for missing table error
     const errorMessage = error instanceof Error ? error.message : String(error)
     if (errorMessage.includes('no such table')) {
@@ -155,7 +173,7 @@ async function listWebhooks(
         error: 'Webhooks table not found. Run: wrangler d1 execute YOUR_DATABASE_NAME --remote --file=worker/migrations/apply_all_migrations.sql',
       }, corsHeaders, 500)
     }
-    
+
     return jsonResponse({ success: false, error: 'Failed to list webhooks' }, corsHeaders, 500)
   }
 }
@@ -166,7 +184,7 @@ async function listWebhooks(
 async function getWebhook(
   webhookId: string,
   env: Env,
-  corsHeaders: CorsHeaders,
+  corsHeaders: HeadersInit,
   isLocalDev: boolean
 ): Promise<Response> {
   if (isLocalDev) {
@@ -178,14 +196,15 @@ async function getWebhook(
   }
 
   try {
-    const webhook = await env.METADATA.prepare(
+    const webhookDB = await env.METADATA.prepare(
       'SELECT * FROM webhooks WHERE id = ?'
-    ).bind(webhookId).first<Webhook>()
+    ).bind(webhookId).first<WebhookDB>()
 
-    if (!webhook) {
+    if (!webhookDB) {
       return jsonResponse({ success: false, error: 'Webhook not found' }, corsHeaders, 404)
     }
 
+    const webhook = dbToWebhook(webhookDB)
     return jsonResponse({ success: true, result: { webhook } }, corsHeaders)
   } catch (error) {
     void logError(env, error instanceof Error ? error : String(error), {
@@ -202,7 +221,7 @@ async function getWebhook(
 async function createWebhook(
   request: Request,
   env: Env,
-  corsHeaders: CorsHeaders,
+  corsHeaders: HeadersInit,
   isLocalDev: boolean
 ): Promise<Response> {
   try {
@@ -226,24 +245,24 @@ async function createWebhook(
     if (isLocalDev) {
       const newWebhook: Webhook = {
         id: webhookId,
-        name: body.name,
         url: body.url,
-        secret: body.secret ?? null,
-        events: JSON.stringify(body.events),
-        enabled: body.enabled ? 1 : 0,
+        events: body.events as import('../types').WebhookEventType[],
+        enabled: body.enabled ?? true,
         created_at: now,
         updated_at: now,
+      }
+      if (body.secret) {
+        newWebhook.secret = body.secret;
       }
       MOCK_WEBHOOKS.push(newWebhook)
       return jsonResponse({ success: true, result: { webhook: newWebhook } }, corsHeaders, 201)
     }
 
     await env.METADATA.prepare(
-      `INSERT INTO webhooks (id, name, url, secret, events, enabled, created_at, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
+      `INSERT INTO webhooks (id, url, secret, events, enabled, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?)`
     ).bind(
       webhookId,
-      body.name,
       body.url,
       body.secret ?? null,
       JSON.stringify(body.events),
@@ -252,10 +271,15 @@ async function createWebhook(
       now
     ).run()
 
-    const webhook = await env.METADATA.prepare(
+    const webhookDB = await env.METADATA.prepare(
       'SELECT * FROM webhooks WHERE id = ?'
-    ).bind(webhookId).first<Webhook>()
+    ).bind(webhookId).first<WebhookDB>()
 
+    if (!webhookDB) {
+      return jsonResponse({ success: false, error: 'Failed to create webhook' }, corsHeaders, 500)
+    }
+
+    const webhook = dbToWebhook(webhookDB)
     return jsonResponse({ success: true, result: { webhook } }, corsHeaders, 201)
   } catch (error) {
     void logError(env, error instanceof Error ? error : String(error), {
@@ -273,7 +297,7 @@ async function updateWebhook(
   webhookId: string,
   request: Request,
   env: Env,
-  corsHeaders: CorsHeaders,
+  corsHeaders: HeadersInit,
   isLocalDev: boolean
 ): Promise<Response> {
   try {
@@ -287,15 +311,21 @@ async function updateWebhook(
       }
       const existing = MOCK_WEBHOOKS[index]
       if (existing) {
-        MOCK_WEBHOOKS[index] = {
+        const updated: Webhook = {
           ...existing,
-          name: body.name ?? existing.name,
           url: body.url ?? existing.url,
-          secret: body.secret !== undefined ? (body.secret ?? null) : existing.secret,
-          events: body.events ? JSON.stringify(body.events) : existing.events,
-          enabled: body.enabled !== undefined ? (body.enabled ? 1 : 0) : existing.enabled,
+          events: body.events ? (body.events as import('../types').WebhookEventType[]) : existing.events,
+          enabled: body.enabled !== undefined ? body.enabled : existing.enabled,
           updated_at: now,
+        };
+        if (body.secret !== undefined) {
+          if (body.secret) {
+            updated.secret = body.secret;
+          } else {
+            delete updated.secret;
+          }
         }
+        MOCK_WEBHOOKS[index] = updated;
         return jsonResponse({ success: true, result: { webhook: MOCK_WEBHOOKS[index] } }, corsHeaders)
       }
     }
@@ -337,14 +367,15 @@ async function updateWebhook(
       `UPDATE webhooks SET ${updates.join(', ')} WHERE id = ?`
     ).bind(...values).run()
 
-    const webhook = await env.METADATA.prepare(
+    const webhookDB = await env.METADATA.prepare(
       'SELECT * FROM webhooks WHERE id = ?'
-    ).bind(webhookId).first<Webhook>()
+    ).bind(webhookId).first<WebhookDB>()
 
-    if (!webhook) {
+    if (!webhookDB) {
       return jsonResponse({ success: false, error: 'Webhook not found' }, corsHeaders, 404)
     }
 
+    const webhook = dbToWebhook(webhookDB)
     return jsonResponse({ success: true, result: { webhook } }, corsHeaders)
   } catch (error) {
     void logError(env, error instanceof Error ? error : String(error), {
@@ -361,7 +392,7 @@ async function updateWebhook(
 async function deleteWebhook(
   webhookId: string,
   env: Env,
-  corsHeaders: CorsHeaders,
+  corsHeaders: HeadersInit,
   isLocalDev: boolean
 ): Promise<Response> {
   if (isLocalDev) {
@@ -402,7 +433,7 @@ async function deleteWebhook(
 async function testWebhook(
   webhookId: string,
   env: Env,
-  corsHeaders: CorsHeaders,
+  corsHeaders: HeadersInit,
   isLocalDev: boolean
 ): Promise<Response> {
   if (isLocalDev) {
@@ -413,21 +444,21 @@ async function testWebhook(
     // Simulate successful test in local dev
     const testResult: WebhookTestResult = {
       success: true,
-      statusCode: 200,
       statusText: 'OK (mock)',
-      responseBody: 'Test successful (mock)',
     }
     return jsonResponse({ success: true, result: testResult }, corsHeaders)
   }
 
   try {
-    const webhook = await env.METADATA.prepare(
+    const webhookDB = await env.METADATA.prepare(
       'SELECT * FROM webhooks WHERE id = ?'
-    ).bind(webhookId).first<Webhook>()
+    ).bind(webhookId).first<WebhookDB>()
 
-    if (!webhook) {
+    if (!webhookDB) {
       return jsonResponse({ success: false, error: 'Webhook not found' }, corsHeaders, 404)
     }
+
+    const webhook = dbToWebhook(webhookDB)
 
     const testData = {
       test: true,
@@ -435,19 +466,18 @@ async function testWebhook(
       timestamp: nowISO(),
     }
 
-    const result = await sendWebhook(webhook, 'batch_complete', testData)
+    const result = await sendWebhook(webhook, 'job.completed', testData)
 
     const testResult: WebhookTestResult = result.success
       ? {
-          success: true,
-          statusCode: result.statusCode ?? 0,
-          statusText: 'OK',
-        }
+        success: true,
+        statusText: 'OK',
+      }
       : {
-          success: false,
-          statusText: 'Failed',
-          error: result.error ?? 'Unknown error',
-        }
+        success: false,
+        statusText: 'Failed',
+        error: result.error ?? 'Unknown error',
+      }
 
     return jsonResponse({ success: true, result: testResult }, corsHeaders)
   } catch (error) {

@@ -2,92 +2,85 @@
 
 This guide helps you migrate your KV Manager database to work with the latest version.
 
-## Do I Need to Migrate?
+## Automated In-App Migrations (Recommended)
 
-If you deployed KV Manager **before November 22, 2025**, you need to run the migration.
+KV Manager now includes an **automated migration system** with an in-app upgrade banner:
 
-If you're installing KV Manager for the first time, **no migration is needed** - just use the main `schema.sql`.
+1. **Launch the app** - When schema updates are available, a yellow banner appears at the top of the page
+2. **Click "Upgrade Now"** - The system automatically applies all pending migrations
+3. **Done!** - A green success banner confirms the upgrade completed
 
-## Quick Migration
+The automated system:
+- Detects legacy installations and handles them automatically
+- Tracks applied migrations in a `schema_version` table
+- Is idempotent (safe to run multiple times)
+- Shows detailed error messages if something goes wrong
 
-Run the migration script:
+## Manual Migration (Alternative)
+
+If you prefer to run migrations manually via command line:
 
 ```bash
 wrangler d1 execute kv-manager-metadata --remote --file=worker/migrations/apply_all_migrations.sql
 ```
 
-This script is **idempotent** and safe to run multiple times. If tables/columns already exist, the migration will handle it gracefully.
+This script is **idempotent** and safe to run multiple times.
+
+## Fresh Installation
+
+If you're installing KV Manager for the first time, use the main schema file:
+
+```bash
+wrangler d1 execute kv-manager-metadata --remote --file=worker/schema.sql
+```
+
+The schema includes all tables needed for KV Manager. The in-app migration system will track that no migrations are pending.
 
 ## What Gets Migrated?
 
-The migration script (`apply_all_migrations.sql`) applies three migrations:
+The migration system tracks three initial migrations:
 
-### Migration 001: Job Audit Events Table
-Adds the `job_audit_events` table for tracking job lifecycle events (started, progress milestones, completed, etc.). This powers the Job History UI's event timeline feature.
+### Version 1: Initial Schema
+Base schema with namespaces, key_metadata, audit_log, and bulk_jobs tables.
 
-**Details:**
-- Creates table with `IF NOT EXISTS` (safe to re-run)
-- Creates indexes for efficient querying by job_id and user_email
+### Version 2: Job Audit Events
+Adds the `job_audit_events` table for tracking job lifecycle events (started, progress milestones, completed, etc.).
 
-### Migration 002: Progress Tracking Columns
-Adds `current_key` and `percentage` columns to the `bulk_jobs` table for real-time progress tracking.
-
-**Details:**
-- Adds columns if they don't exist
-- Note: SQLite will error if columns already exist, but this is harmless (see Troubleshooting)
-
-### Migration 003: Metadata Column for Batch Operations
-Adds `metadata` column to the `bulk_jobs` table to support batch operations (e.g., batch R2 backup/restore) that need to store multiple namespace IDs.
-
-**Details:**
-- Adds the `metadata` TEXT column to store JSON data
-- Required for batch namespace R2 backup and restore features
+### Version 3: Webhooks
+Adds the `webhooks` table for external observability notifications.
 
 ## Troubleshooting
 
-### Error: "duplicate column name"
-This is expected if you run migrations 002 or 003 twice. The columns already exist, and the error is harmless. The migration is complete.
+### Banner not showing when expected
+- Refresh the page to re-check migration status
+- Check the browser console for API errors
 
-### Error: "table job_audit_events already exists"
-This won't happen because we use `CREATE TABLE IF NOT EXISTS`, but if you see it, the table already exists and the migration is complete.
+### "Upgrade Now" fails
+- Check the error message displayed in the banner
+- Verify D1 database binding is correctly configured
+- Try the manual migration command as a fallback
 
 ### Verify Migration Success
 
-Check that the tables and columns exist:
+Check the schema_version table:
 
 ```bash
-# Check job_audit_events table
-wrangler d1 execute kv-manager-metadata --remote --command="SELECT COUNT(*) FROM job_audit_events"
-
-# Check bulk_jobs columns (should include current_key, percentage, and metadata)
-wrangler d1 execute kv-manager-metadata --remote --command="PRAGMA table_info(bulk_jobs)"
+wrangler d1 execute kv-manager-metadata --remote --command="SELECT * FROM schema_version"
 ```
 
-You should see `current_key`, `percentage`, and `metadata` in the bulk_jobs columns list.
-
-### Windows File Handle Errors
-If you encounter file handle errors on Windows when running migrations with `--file`, you can run individual migrations using `--command` instead:
-
-```bash
-wrangler d1 execute kv-manager-metadata --remote --command="ALTER TABLE bulk_jobs ADD COLUMN metadata TEXT;"
-```
+You should see entries for each applied migration version.
 
 ## Local Development
 
-For local development databases, use the `--local` flag instead of `--remote`:
+For local development, the in-app migration system works the same way. Alternatively:
 
 ```bash
 wrangler d1 execute kv-manager-metadata-dev --local --file=worker/migrations/apply_all_migrations.sql
 ```
-
-## Docker Users
-
-If you're running KV Manager in Docker with a mounted D1 database, you'll need to run the migration from outside the container using Wrangler, or restart the container after updating to ensure the schema is current.
 
 ## Need Help?
 
 If you encounter any issues with the migration, please open an issue on GitHub with:
 - The error message
 - Your database binding name
-- Whether you're running in production (--remote) or development (--local)
-
+- Whether you're running in production or development

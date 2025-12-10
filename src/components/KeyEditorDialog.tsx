@@ -16,6 +16,7 @@ import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import { MetadataEditor } from './MetadataEditor'
+import { JsonEditor } from './ui/JsonEditor'
 
 interface KeyEditorDialogProps {
   open: boolean
@@ -39,6 +40,7 @@ export function KeyEditorDialog({
   const [originalMetadata, setOriginalMetadata] = useState('')
   const [ttl, setTTL] = useState('')
   const [originalTTL, setOriginalTTL] = useState('')
+  const [expirationTimestamp, setExpirationTimestamp] = useState<number | null>(null)
   const [hasBackup, setHasBackup] = useState(false)
   const [saving, setSaving] = useState(false)
   const [restoring, setRestoring] = useState(false)
@@ -47,6 +49,7 @@ export function KeyEditorDialog({
   const [valueSize, setValueSize] = useState(0)
   const [isJSON, setIsJSON] = useState(false)
   const [showFormatted, setShowFormatted] = useState(false)
+  const [isMetadataValid, setIsMetadataValid] = useState(true)
 
   // Define callbacks before useEffect
   const loadKeyData = useCallback(async () => {
@@ -57,8 +60,9 @@ export function KeyEditorDialog({
       setValue(result.value)
       setOriginalValue(result.value)
       setValueSize(result.size || new Blob([result.value]).size)
-      
-      if (result.metadata) {
+
+      // Load KV native metadata if available
+      if (result.metadata && Object.keys(result.metadata).length > 0) {
         const metadataStr = JSON.stringify(result.metadata, null, 2)
         setMetadata(metadataStr)
         setOriginalMetadata(metadataStr)
@@ -66,8 +70,15 @@ export function KeyEditorDialog({
         setMetadata('')
         setOriginalMetadata('')
       }
-      
-      // Note: TTL/expiration cannot be retrieved from KV API, so we don't set originalTTL
+
+      // Store expiration timestamp for display, but don't pre-populate TTL field
+      // Pre-populating with remaining TTL is confusing because it decreases each time
+      if (result.expiration) {
+        setExpirationTimestamp(result.expiration)
+      } else {
+        setExpirationTimestamp(null)
+      }
+      // Leave TTL field empty - user can enter a new TTL if they want to update it
       setTTL('')
       setOriginalTTL('')
     } catch (err) {
@@ -99,6 +110,7 @@ export function KeyEditorDialog({
       setOriginalMetadata('')
       setTTL('')
       setOriginalTTL('')
+      setExpirationTimestamp(null)
       setError('')
       setActiveTab('value')
       setShowFormatted(false)
@@ -155,10 +167,10 @@ export function KeyEditorDialog({
       }
 
       await api.putKey(namespaceId, keyName, value, options)
-      
+
       // Notify parent to refresh (await if it returns a promise)
       await Promise.resolve(onSaved())
-      
+
       onOpenChange(false)
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to save key')
@@ -176,11 +188,11 @@ export function KeyEditorDialog({
       setRestoring(true)
       setError('')
       await api.restoreBackup(namespaceId, keyName)
-      
+
       // Reload the key data in the dialog
       await loadKeyData()
       setHasBackup(false)
-      
+
       // Notify parent to refresh the list (await if it returns a promise)
       await Promise.resolve(onSaved())
     } catch (err) {
@@ -260,34 +272,43 @@ export function KeyEditorDialog({
                 {/* TTL Section */}
                 <div className="grid gap-2">
                   <Label htmlFor="edit-ttl">TTL (seconds)</Label>
+                  {expirationTimestamp && (
+                    <p className="text-sm text-muted-foreground bg-muted/50 px-3 py-2 rounded-md">
+                      Current expiration: {new Date(expirationTimestamp * 1000).toLocaleString()}
+                    </p>
+                  )}
                   <Input
                     id="edit-ttl"
                     type="number"
-                    placeholder="Leave empty for no expiration"
+                    placeholder={expirationTimestamp ? "Enter new TTL to update expiration" : "Leave empty for no expiration"}
                     value={ttl}
                     onChange={(e) => setTTL(e.target.value)}
                     min="60"
                   />
+                  {ttl.trim() && parseInt(ttl) > 0 && parseInt(ttl) < 60 && (
+                    <p className="text-sm text-destructive">
+                      TTL must be at least 60 seconds (Cloudflare KV minimum)
+                    </p>
+                  )}
                   <p className="text-sm text-muted-foreground">
-                    Set time-to-live in seconds (minimum 60). Key will expire after this duration.
+                    {expirationTimestamp
+                      ? "Enter a new TTL to update the expiration time (minimum 60 seconds)."
+                      : "Set time-to-live in seconds (minimum 60). Key will expire after this duration."}
                   </p>
                 </div>
 
                 {/* KV Native Metadata */}
-                <div className="grid gap-2">
-                  <Label htmlFor="edit-metadata">KV Native Metadata (JSON)</Label>
-                  <Textarea
-                    id="edit-metadata"
-                    placeholder='{"key": "value"}'
-                    value={metadata}
-                    onChange={(e) => setMetadata(e.target.value)}
-                    className="font-mono min-h-[100px]"
-                    rows={4}
-                  />
-                  <p className="text-sm text-muted-foreground">
-                    Optional JSON metadata stored natively in KV (limited to 1024 bytes).
-                  </p>
-                </div>
+                <JsonEditor
+                  id="edit-metadata"
+                  name="edit-metadata"
+                  label="KV Native Metadata (JSON)"
+                  value={metadata}
+                  onChange={setMetadata}
+                  onValidityChange={setIsMetadataValid}
+                  placeholder='{"key": "value"}'
+                  helpText="Optional JSON metadata stored natively in KV (limited to 1024 bytes)"
+                  rows={4}
+                />
 
                 {/* D1-backed Tags and Metadata */}
                 <div className="border-t pt-4">
@@ -298,6 +319,7 @@ export function KeyEditorDialog({
                   <MetadataEditor
                     namespaceId={namespaceId}
                     keyName={keyName}
+                    kvMetadataValid={isMetadataValid}
                     onSave={() => {
                       // Metadata saved successfully
                     }}
@@ -353,9 +375,9 @@ export function KeyEditorDialog({
               >
                 Cancel
               </Button>
-              <Button 
-                onClick={handleSave} 
-                disabled={saving || (value === originalValue && metadata === originalMetadata && ttl === originalTTL)}
+              <Button
+                onClick={handleSave}
+                disabled={saving || !isMetadataValid || (value === originalValue && metadata === originalMetadata && ttl === originalTTL) || (ttl.trim() !== '' && parseInt(ttl) > 0 && parseInt(ttl) < 60)}
               >
                 {saving ? (
                   <><Loader2 className="h-4 w-4 mr-2 animate-spin" /> Saving...</>

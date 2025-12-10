@@ -1,5 +1,6 @@
 import type { Env, APIResponse } from '../types';
 import { getD1Binding } from '../utils/helpers';
+import { logInfo, logError, createErrorContext } from '../utils/error-logger';
 
 export async function handleMetadataRoutes(
   request: Request,
@@ -16,9 +17,25 @@ export async function handleMetadataRoutes(
     const getMatch = url.pathname.match(/^\/api\/metadata\/([^/]+)\/([^/]+)$/);
     if (getMatch && request.method === 'GET') {
       const namespaceId = getMatch[1];
-      const keyName = decodeURIComponent(getMatch[2]);
+      if (!namespaceId) {
+        return new Response(JSON.stringify({ error: 'Invalid namespace ID' }), {
+          status: 400,
+          headers: { 'Content-Type': 'application/json', ...corsHeaders }
+        });
+      }
+      const keyNameEncoded = getMatch[2];
+      if (!keyNameEncoded) {
+        return new Response(JSON.stringify({ error: 'Invalid key name' }), {
+          status: 400,
+          headers: { 'Content-Type': 'application/json', ...corsHeaders }
+        });
+      }
+      const keyName = decodeURIComponent(keyNameEncoded);
 
-      console.log('[Metadata] Getting metadata for key:', keyName, 'in namespace:', namespaceId);
+      logInfo('Getting metadata for key', createErrorContext('metadata', 'get_metadata', {
+        ...(namespaceId !== undefined && { namespaceId }),
+        keyName
+      }));
 
       if (isLocalDev || !db) {
         // Return mock metadata
@@ -63,12 +80,12 @@ export async function handleMetadataRoutes(
       const response: APIResponse = {
         success: true,
         result: {
-          namespace_id: result.namespace_id,
-          key_name: result.key_name,
-          tags: result.tags ? JSON.parse(result.tags as string) : [],
-          custom_metadata: result.custom_metadata ? JSON.parse(result.custom_metadata as string) : {},
-          created_at: result.created_at,
-          updated_at: result.updated_at
+          namespace_id: result['namespace_id'] as string,
+          key_name: result['key_name'] as string,
+          tags: result['tags'] ? JSON.parse(result['tags'] as string) : [],
+          custom_metadata: result['custom_metadata'] ? JSON.parse(result['custom_metadata'] as string) : {},
+          created_at: result['created_at'] as string | undefined,
+          updated_at: result['updated_at'] as string | undefined
         }
       };
 
@@ -81,13 +98,29 @@ export async function handleMetadataRoutes(
     const putMatch = url.pathname.match(/^\/api\/metadata\/([^/]+)\/([^/]+)$/);
     if (putMatch && request.method === 'PUT') {
       const namespaceId = putMatch[1];
-      const keyName = decodeURIComponent(putMatch[2]);
+      if (!namespaceId) {
+        return new Response(JSON.stringify({ error: 'Invalid namespace ID' }), {
+          status: 400,
+          headers: { 'Content-Type': 'application/json', ...corsHeaders }
+        });
+      }
+      const keyNameEncoded = putMatch[2];
+      if (!keyNameEncoded) {
+        return new Response(JSON.stringify({ error: 'Invalid key name' }), {
+          status: 400,
+          headers: { 'Content-Type': 'application/json', ...corsHeaders }
+        });
+      }
+      const keyName = decodeURIComponent(keyNameEncoded);
       const body = await request.json() as {
         tags?: string[];
         custom_metadata?: Record<string, unknown>;
       };
 
-      console.log('[Metadata] Updating metadata for key:', keyName, 'in namespace:', namespaceId);
+      logInfo('Updating metadata for key', createErrorContext('metadata', 'update_metadata', {
+        ...(namespaceId !== undefined && { namespaceId }),
+        keyName
+      }));
 
       if (isLocalDev || !db) {
         const response: APIResponse = {
@@ -142,7 +175,10 @@ export async function handleMetadataRoutes(
       }
 
       const operation = body.operation || 'replace';
-      console.log('[Metadata] Bulk tag operation:', operation, 'for', body.keys.length, 'keys');
+      logInfo('Bulk tag operation', createErrorContext('metadata', 'bulk_tag', {
+        ...(namespaceId !== undefined && { namespaceId }),
+        metadata: { operation, keyCount: body.keys.length, tags: body.tags }
+      }));
 
       if (isLocalDev) {
         const jobId = `tag-${Date.now()}`;
@@ -188,11 +224,14 @@ export async function handleMetadataRoutes(
         })
       });
 
-      console.log('[Metadata] Starting bulk tag processing in DO for job:', jobId);
+      logInfo('Starting bulk tag processing in DO', createErrorContext('metadata', 'bulk_tag', {
+        metadata: { jobId }
+      }));
 
-      // @ts-expect-error - Request types are compatible at runtime
       const doResponse = await stub.fetch(doRequest);
-      console.log('[Metadata] Bulk tag DO processing initiated, response status:', doResponse.status);
+      logInfo('Bulk tag DO processing initiated', createErrorContext('metadata', 'bulk_tag', {
+        metadata: { jobId, responseStatus: doResponse.status }
+      }));
 
       // Return immediately with job info
       const response: APIResponse = {
@@ -216,7 +255,7 @@ export async function handleMetadataRoutes(
       headers: { 'Content-Type': 'application/json', ...corsHeaders }
     });
   } catch (error) {
-    console.error('[Metadata] Error:', error);
+    await logError(env, error instanceof Error ? error : String(error), createErrorContext('metadata', 'handle_request'), isLocalDev);
     return new Response(
       JSON.stringify({ error: 'Internal Server Error' }),
       {
