@@ -174,7 +174,7 @@ export async function handleNamespaceRoutes(
       }
 
       logInfo('Renaming namespace', createErrorContext('namespaces', 'rename_namespace', {
-        ...(namespaceId !== undefined && { namespaceId }),
+        ...(namespaceId && { namespaceId }),
         metadata: { newTitle: body.title }
       }));
 
@@ -208,7 +208,7 @@ export async function handleNamespaceRoutes(
       if (!cfResponse.ok) {
         const errorText = await cfResponse.text();
         await logError(env, `Cloudflare API error: ${errorText}`, createErrorContext('namespaces', 'rename_namespace', {
-          ...(namespaceId !== undefined && { namespaceId }),
+          ...(namespaceId && { namespaceId }),
           metadata: { status: cfResponse.status }
         }), isLocalDev);
         throw new Error(`Cloudflare API error: ${cfResponse.status} - ${errorText}`);

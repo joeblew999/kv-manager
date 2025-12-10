@@ -117,7 +117,7 @@ export async function handleAuditRoutes(
       const operationType = url.searchParams.get('operation');
 
       logInfo('Getting audit log for namespace', createErrorContext('audit', 'get_log', {
-        ...(namespaceId !== undefined && { namespaceId }),
+        ...(namespaceId && { namespaceId }),
         metadata: { limit, offset }
       }));
 

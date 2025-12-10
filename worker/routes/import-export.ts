@@ -20,7 +20,7 @@ export async function handleImportExportRoutes(
       const format = url.searchParams.get('format') || 'json';
 
       logInfo('Exporting namespace', createErrorContext('export', 'start_export', {
-        ...(namespaceId !== undefined && { namespaceId }),
+        ...(namespaceId && { namespaceId }),
         metadata: { format }
       }));
 
@@ -100,7 +100,7 @@ export async function handleImportExportRoutes(
       const collisionHandling = url.searchParams.get('collision') || 'overwrite';
 
       logInfo('Importing to namespace', createErrorContext('import', 'start_import', {
-        ...(namespaceId !== undefined && { namespaceId }),
+        ...(namespaceId && { namespaceId }),
         metadata: { collisionHandling }
       }));
 
@@ -121,7 +121,7 @@ export async function handleImportExportRoutes(
       }
 
       logInfo(`Parsed ${importData.length} items`, createErrorContext('import', 'start_import', {
-        ...(namespaceId !== undefined && { namespaceId }),
+        ...(namespaceId && { namespaceId }),
         metadata: { itemCount: importData.length }
       }));
 

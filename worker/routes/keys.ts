@@ -21,7 +21,7 @@ export async function handleKeyRoutes(
       const limit = url.searchParams.get('limit') || '1000';
 
       logInfo('Listing keys for namespace', createErrorContext('keys', 'list_keys', {
-        ...(namespaceId !== undefined && { namespaceId }),
+        ...(namespaceId && { namespaceId }),
         metadata: { prefix, limit }
       }));
 
@@ -58,14 +58,14 @@ export async function handleKeyRoutes(
 
       const cfResponse = await fetch(cfRequest);
       logInfo('Cloudflare API response', createErrorContext('keys', 'list_keys', {
-        ...(namespaceId !== undefined && { namespaceId }),
+        ...(namespaceId && { namespaceId }),
         metadata: { status: cfResponse.status }
       }));
 
       if (!cfResponse.ok) {
         const errorText = await cfResponse.text();
         await logError(env, `Cloudflare API error: ${errorText}`, createErrorContext('keys', 'list_keys', {
-          ...(namespaceId !== undefined && { namespaceId }),
+          ...(namespaceId && { namespaceId }),
           metadata: { status: cfResponse.status }
         }), isLocalDev);
         throw new Error(`Cloudflare API error: ${cfResponse.status} - ${errorText}`);
@@ -100,7 +100,7 @@ export async function handleKeyRoutes(
       const keyName = decodeURIComponent(keyNameEncoded);
 
       logInfo('Getting key', createErrorContext('keys', 'get_key', {
-        ...(namespaceId !== undefined && { namespaceId }),
+        ...(namespaceId && { namespaceId }),
         keyName
       }));
 
@@ -132,7 +132,7 @@ export async function handleKeyRoutes(
       if (!cfResponse.ok) {
         const errorText = await cfResponse.text();
         await logError(env, `Cloudflare API error: ${errorText}`, createErrorContext('keys', 'get_key', {
-          ...(namespaceId !== undefined && { namespaceId }),
+          ...(namespaceId && { namespaceId }),
           keyName,
           metadata: { status: cfResponse.status }
         }), isLocalDev);
@@ -175,7 +175,7 @@ export async function handleKeyRoutes(
       } catch {
         // If fetching key info fails, continue without expiration
         logWarning('Failed to fetch key expiration info', createErrorContext('keys', 'get_key', {
-          ...(namespaceId !== undefined && { namespaceId }),
+          ...(namespaceId && { namespaceId }),
           keyName
         }));
       }
@@ -223,7 +223,7 @@ export async function handleKeyRoutes(
       }
 
       logInfo('Putting key', createErrorContext('keys', 'put_key', {
-        ...(namespaceId !== undefined && { namespaceId }),
+        ...(namespaceId && { namespaceId }),
         keyName
       }));
 
@@ -261,13 +261,13 @@ export async function handleKeyRoutes(
             );
             await fetch(backupRequest);
             logInfo('Created backup for key', createErrorContext('keys', 'put_key', {
-              ...(namespaceId !== undefined && { namespaceId }),
+              ...(namespaceId && { namespaceId }),
               keyName
             }));
           }
         } catch (err) {
           logWarning('Failed to create backup', createErrorContext('keys', 'put_key', {
-            ...(namespaceId !== undefined && { namespaceId }),
+            ...(namespaceId && { namespaceId }),
             keyName,
             metadata: { error: err instanceof Error ? err.message : String(err) }
           }));
@@ -331,7 +331,7 @@ export async function handleKeyRoutes(
       if (!cfResponse.ok) {
         const errorText = await cfResponse.text();
         await logError(env, `Cloudflare API error: ${errorText}`, createErrorContext('keys', 'put_key', {
-          ...(namespaceId !== undefined && { namespaceId }),
+          ...(namespaceId && { namespaceId }),
           keyName,
           metadata: { status: cfResponse.status }
         }), isLocalDev);
@@ -352,12 +352,12 @@ export async function handleKeyRoutes(
             .bind(namespaceId, keyName, '[]', '{}')
             .run();
           logInfo('Ensured metadata entry exists for key', createErrorContext('keys', 'put_key', {
-            ...(namespaceId !== undefined && { namespaceId }),
+            ...(namespaceId && { namespaceId }),
             keyName
           }));
         } catch (err) {
           logWarning('Failed to create/update metadata entry', createErrorContext('keys', 'put_key', {
-            ...(namespaceId !== undefined && { namespaceId }),
+            ...(namespaceId && { namespaceId }),
             keyName,
             metadata: { error: err instanceof Error ? err.message : String(err) }
           }));
@@ -397,7 +397,7 @@ export async function handleKeyRoutes(
       const keyName = decodeURIComponent(keyNameEncoded);
 
       logInfo('Deleting key', createErrorContext('keys', 'delete_key', {
-        ...(namespaceId !== undefined && { namespaceId }),
+        ...(namespaceId && { namespaceId }),
         keyName
       }));
 
@@ -422,7 +422,7 @@ export async function handleKeyRoutes(
       if (!cfResponse.ok) {
         const errorText = await cfResponse.text();
         await logError(env, `Cloudflare API error: ${errorText}`, createErrorContext('keys', 'delete_key', {
-          ...(namespaceId !== undefined && { namespaceId }),
+          ...(namespaceId && { namespaceId }),
           keyName,
           metadata: { status: cfResponse.status }
         }), isLocalDev);
@@ -437,12 +437,12 @@ export async function handleKeyRoutes(
             .bind(namespaceId, keyName)
             .run();
           logInfo('Deleted metadata entry for key', createErrorContext('keys', 'delete_key', {
-            ...(namespaceId !== undefined && { namespaceId }),
+            ...(namespaceId && { namespaceId }),
             keyName
           }));
         } catch (err) {
           logWarning('Failed to delete metadata entry', createErrorContext('keys', 'delete_key', {
-            ...(namespaceId !== undefined && { namespaceId }),
+            ...(namespaceId && { namespaceId }),
             keyName,
             metadata: { error: err instanceof Error ? err.message : String(err) }
           }));
@@ -481,7 +481,7 @@ export async function handleKeyRoutes(
       }
 
       logInfo('Bulk deleting keys from namespace', createErrorContext('keys', 'bulk_delete', {
-        ...(namespaceId !== undefined && { namespaceId }),
+        ...(namespaceId && { namespaceId }),
         metadata: { keyCount: body.keys.length }
       }));
 
@@ -652,7 +652,7 @@ export async function handleKeyRoutes(
       }
 
       logInfo('Bulk updating TTL for keys', createErrorContext('keys', 'bulk_ttl', {
-        ...(namespaceId !== undefined && { namespaceId }),
+        ...(namespaceId && { namespaceId }),
         metadata: { keyCount: body.keys.length, ttl: body.expiration_ttl }
       }));
 
@@ -755,7 +755,7 @@ export async function handleKeyRoutes(
       }
 
       logInfo('Renaming key', createErrorContext('keys', 'rename_key', {
-        ...(namespaceId !== undefined && { namespaceId }),
+        ...(namespaceId && { namespaceId }),
         keyName: oldName,
         metadata: { newName }
       }));
@@ -777,7 +777,7 @@ export async function handleKeyRoutes(
       if (!valueResponse.ok) {
         const errorText = await valueResponse.text();
         await logError(env, `Key not found: ${errorText}`, createErrorContext('keys', 'rename_key', {
-          ...(namespaceId !== undefined && { namespaceId }),
+          ...(namespaceId && { namespaceId }),
           keyName: oldName,
           metadata: { status: valueResponse.status, code: 'KEY_RENAME_FAILED' }
         }), isLocalDev);
@@ -818,7 +818,7 @@ export async function handleKeyRoutes(
         }
       } catch {
         logWarning('Failed to fetch key expiration info for rename', createErrorContext('keys', 'rename_key', {
-          ...(namespaceId !== undefined && { namespaceId }),
+          ...(namespaceId && { namespaceId }),
           keyName: oldName
         }));
       }
@@ -838,7 +838,7 @@ export async function handleKeyRoutes(
           }
         } catch (err) {
           logWarning('Failed to fetch D1 metadata for rename', createErrorContext('keys', 'rename_key', {
-            ...(namespaceId !== undefined && { namespaceId }),
+            ...(namespaceId && { namespaceId }),
             keyName: oldName,
             metadata: { error: err instanceof Error ? err.message : String(err) }
           }));
@@ -900,7 +900,7 @@ export async function handleKeyRoutes(
       if (!putResponse.ok) {
         const errorText = await putResponse.text();
         await logError(env, `Failed to write new key: ${errorText}`, createErrorContext('keys', 'rename_key', {
-          ...(namespaceId !== undefined && { namespaceId }),
+          ...(namespaceId && { namespaceId }),
           keyName: newName,
           metadata: { status: putResponse.status, code: 'KEY_RENAME_FAILED' }
         }), isLocalDev);
@@ -924,7 +924,7 @@ export async function handleKeyRoutes(
             .run();
         } catch (err) {
           logWarning('Failed to create D1 metadata for new key', createErrorContext('keys', 'rename_key', {
-            ...(namespaceId !== undefined && { namespaceId }),
+            ...(namespaceId && { namespaceId }),
             keyName: newName,
             metadata: { error: err instanceof Error ? err.message : String(err) }
           }));
@@ -941,7 +941,7 @@ export async function handleKeyRoutes(
 
       if (!deleteResponse.ok) {
         logWarning('Failed to delete old key after rename', createErrorContext('keys', 'rename_key', {
-          ...(namespaceId !== undefined && { namespaceId }),
+          ...(namespaceId && { namespaceId }),
           keyName: oldName,
           metadata: { status: deleteResponse.status }
         }));
@@ -957,7 +957,7 @@ export async function handleKeyRoutes(
             .run();
         } catch (err) {
           logWarning('Failed to delete old D1 metadata', createErrorContext('keys', 'rename_key', {
-            ...(namespaceId !== undefined && { namespaceId }),
+            ...(namespaceId && { namespaceId }),
             keyName: oldName,
             metadata: { error: err instanceof Error ? err.message : String(err) }
           }));
@@ -974,7 +974,7 @@ export async function handleKeyRoutes(
       });
 
       logInfo('Key renamed successfully', createErrorContext('keys', 'rename_key', {
-        ...(namespaceId !== undefined && { namespaceId }),
+        ...(namespaceId && { namespaceId }),
         keyName: newName,
         metadata: { oldName }
       }));

@@ -22,7 +22,7 @@ export async function handleAdminRoutes(
       const namespaceId = syncMatch[1];
 
       logInfo('Syncing keys for namespace', createErrorContext('admin', 'sync_keys', {
-        ...(namespaceId !== undefined && { namespaceId }),
+        ...(namespaceId && { namespaceId }),
         userId: userEmail
       }));
 
@@ -48,7 +48,7 @@ export async function handleAdminRoutes(
       if (!cfResponse.ok) {
         const errorText = await cfResponse.text();
         await logError(env, `Cloudflare API error: ${errorText}`, createErrorContext('admin', 'sync_keys', {
-          ...(namespaceId !== undefined && { namespaceId }),
+          ...(namespaceId && { namespaceId }),
           metadata: { status: cfResponse.status }
         }), isLocalDev);
         throw new Error(`Cloudflare API error: ${cfResponse.status} - ${errorText}`);
@@ -58,7 +58,7 @@ export async function handleAdminRoutes(
       const keys = data.result || [];
 
       logInfo(`Found ${keys.length} keys to sync`, createErrorContext('admin', 'sync_keys', {
-        ...(namespaceId !== undefined && { namespaceId }),
+        ...(namespaceId && { namespaceId }),
         metadata: { keyCount: keys.length }
       }));
 
@@ -78,7 +78,7 @@ export async function handleAdminRoutes(
           syncedCount++;
         } catch (err) {
           logWarning(`Failed to sync key: ${key.name}`, createErrorContext('admin', 'sync_keys', {
-            ...(namespaceId !== undefined && { namespaceId }),
+            ...(namespaceId && { namespaceId }),
             keyName: key.name,
             metadata: { error: err instanceof Error ? err.message : String(err) }
           }));
@@ -87,7 +87,7 @@ export async function handleAdminRoutes(
       }
 
       logInfo(`Successfully synced ${syncedCount} of ${keys.length} keys`, createErrorContext('admin', 'sync_keys', {
-        ...(namespaceId !== undefined && { namespaceId }),
+        ...(namespaceId && { namespaceId }),
         metadata: { syncedCount, totalKeys: keys.length }
       }));
 

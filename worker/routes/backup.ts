@@ -34,7 +34,7 @@ export async function handleBackupRoutes(
       const backupKey = `__backup__:${keyName}`;
 
       logInfo('Checking backup for key', createErrorContext('backup', 'check_backup', {
-        ...(namespaceId !== undefined && { namespaceId }),
+        ...(namespaceId && { namespaceId }),
         keyName
       }));
 
@@ -60,7 +60,7 @@ export async function handleBackupRoutes(
       const exists = cfResponse.ok;
 
       logInfo('Backup check result', createErrorContext('backup', 'check_backup', {
-        ...(namespaceId !== undefined && { namespaceId }),
+        ...(namespaceId && { namespaceId }),
         keyName,
         metadata: { exists }
       }));
@@ -96,7 +96,7 @@ export async function handleBackupRoutes(
       const backupKey = `__backup__:${keyName}`;
 
       logInfo('Restoring backup for key', createErrorContext('backup', 'restore_backup', {
-        ...(namespaceId !== undefined && { namespaceId }),
+        ...(namespaceId && { namespaceId }),
         keyName
       }));
 
@@ -148,7 +148,7 @@ export async function handleBackupRoutes(
       if (!restoreResponse.ok) {
         const errorText = await restoreResponse.text();
         await logError(env, `Failed to restore backup: ${restoreResponse.status}`, createErrorContext('backup', 'restore_backup', {
-          ...(namespaceId !== undefined && { namespaceId }),
+          ...(namespaceId && { namespaceId }),
           keyName,
           metadata: { errorText }
         }), isLocalDev);
@@ -176,7 +176,7 @@ export async function handleBackupRoutes(
       await auditLog(db, auditEntry);
 
       logInfo('Restore completed successfully', createErrorContext('backup', 'restore_backup', {
-        ...(namespaceId !== undefined && { namespaceId }),
+        ...(namespaceId && { namespaceId }),
         keyName
       }));
 

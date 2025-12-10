@@ -219,7 +219,7 @@ export async function handleR2BackupRoutes(
       const namespaceId = listMatch[1];
 
       logInfo('Listing backups for namespace', createErrorContext('r2_backup', 'list_backups', {
-        ...(namespaceId !== undefined && { namespaceId })
+        ...(namespaceId && { namespaceId })
       }));
 
       if (isLocalDev || !env.BACKUP_BUCKET) {
@@ -284,7 +284,7 @@ export async function handleR2BackupRoutes(
       const format = url.searchParams.get('format') || 'json';
 
       logInfo('Starting backup for namespace', createErrorContext('r2_backup', 'start_backup', {
-        ...(namespaceId !== undefined && { namespaceId }),
+        ...(namespaceId && { namespaceId }),
         metadata: { format }
       }));
 
@@ -364,7 +364,7 @@ export async function handleR2BackupRoutes(
       const backupPath = body.backupPath;
 
       logInfo('Starting restore for namespace', createErrorContext('r2_restore', 'start_restore', {
-        ...(namespaceId !== undefined && { namespaceId }),
+        ...(namespaceId && { namespaceId }),
         metadata: { backupPath }
       }));
 

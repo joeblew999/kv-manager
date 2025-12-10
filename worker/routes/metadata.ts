@@ -33,7 +33,7 @@ export async function handleMetadataRoutes(
       const keyName = decodeURIComponent(keyNameEncoded);
 
       logInfo('Getting metadata for key', createErrorContext('metadata', 'get_metadata', {
-        ...(namespaceId !== undefined && { namespaceId }),
+        ...(namespaceId && { namespaceId }),
         keyName
       }));
 
@@ -118,7 +118,7 @@ export async function handleMetadataRoutes(
       };
 
       logInfo('Updating metadata for key', createErrorContext('metadata', 'update_metadata', {
-        ...(namespaceId !== undefined && { namespaceId }),
+        ...(namespaceId && { namespaceId }),
         keyName
       }));
 
@@ -176,7 +176,7 @@ export async function handleMetadataRoutes(
 
       const operation = body.operation || 'replace';
       logInfo('Bulk tag operation', createErrorContext('metadata', 'bulk_tag', {
-        ...(namespaceId !== undefined && { namespaceId }),
+        ...(namespaceId && { namespaceId }),
         metadata: { operation, keyCount: body.keys.length, tags: body.tags }
       }));
 
