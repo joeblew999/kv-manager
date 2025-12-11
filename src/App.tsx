@@ -1,9 +1,9 @@
 import React, { useState, useEffect, useCallback, Suspense, lazy } from 'react'
-import { api, type KVNamespace, type KVKey, type JobProgress, type R2BackupListItem, type MigrationStatus, getMigrationStatus, applyMigrations, markLegacyMigrations } from './services/api'
+import { api, type KVNamespace, type KVKey, type JobProgress, type R2BackupListItem, type MigrationStatus, type NamespaceColor, getMigrationStatus, applyMigrations, markLegacyMigrations } from './services/api'
 import { auth } from './services/auth'
 import { useTheme } from './hooks/useTheme'
 import { useNamespaceViewPreference } from './hooks/useNamespaceViewPreference'
-import { Database, Plus, Moon, Sun, Monitor, Loader2, Trash2, Key, Search, History, Download, Upload, Copy, Clock, Tag, RefreshCw, Pencil, ExternalLink, BarChart2, ArrowUpCircle, Check } from 'lucide-react'
+import { Database, Plus, Moon, Sun, Monitor, Loader2, Trash2, Key, Search, History, Download, Upload, Copy, Clock, Tag, RefreshCw, Pencil, ExternalLink, BarChart2, ArrowUpCircle, Check, X } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Checkbox } from '@/components/ui/checkbox'
 import {
@@ -25,11 +25,15 @@ import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { Textarea } from '@/components/ui/textarea'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
+import { Badge } from '@/components/ui/badge'
 import { KeyEditorDialog } from './components/KeyEditorDialog'
 import { BulkProgressDialog } from './components/BulkProgressDialog'
 import { JsonEditor } from './components/ui/JsonEditor'
 import { ViewToggle } from './components/ui/ViewToggle'
 import { NamespaceListRow } from './components/NamespaceListRow'
+import { NamespaceColorPicker } from './components/NamespaceColorPicker'
+import { KeyColorPicker } from './components/KeyColorPicker'
+import { getColorConfig } from './utils/namespaceColors'
 
 // Lazy-loaded components for code-splitting (reduces initial bundle by ~70KB)
 const SearchKeys = lazy(() => import('./components/SearchKeys').then(m => ({ default: m.SearchKeys })))
@@ -68,6 +72,9 @@ export default function App(): React.JSX.Element {
   // Namespace filter state
   const [namespaceFilter, setNamespaceFilter] = useState('')
 
+  // Namespace colors state
+  const [namespaceColors, setNamespaceColors] = useState<Record<string, string>>({})
+
   // Key browser state
   const [keys, setKeys] = useState<KVKey[]>([])
   const [keysLoading, setKeysLoading] = useState(false)
@@ -77,12 +84,20 @@ export default function App(): React.JSX.Element {
   const [keysCursor, setKeysCursor] = useState<string | undefined>()
   const [keysListComplete, setKeysListComplete] = useState(true)
 
+  // Key colors state
+  const [keyColors, setKeyColors] = useState<Record<string, string>>({})
+
   // Create key state
   const [showCreateKeyDialog, setShowCreateKeyDialog] = useState(false)
   const [newKeyName, setNewKeyName] = useState('')
   const [newKeyValue, setNewKeyValue] = useState('')
   const [newKeyTTL, setNewKeyTTL] = useState('')
   const [newKeyMetadata, setNewKeyMetadata] = useState('')
+  const [newKeyTags, setNewKeyTags] = useState<string[]>([])
+  const [newKeyTagInput, setNewKeyTagInput] = useState('')
+  const [newKeyCustomMetadata, setNewKeyCustomMetadata] = useState('')
+  const [isNewKeyMetadataValid, setIsNewKeyMetadataValid] = useState(true)
+  const [isNewKeyCustomMetadataValid, setIsNewKeyCustomMetadataValid] = useState(true)
   const [creatingKey, setCreatingKey] = useState(false)
 
   // Edit key state
@@ -147,6 +162,7 @@ export default function App(): React.JSX.Element {
   // Check migration status and load namespaces on mount
   useEffect(() => {
     loadNamespaces()
+    loadNamespaceColors()
     checkMigrationStatus()
   }, [])
 
@@ -205,6 +221,34 @@ export default function App(): React.JSX.Element {
       setError(err instanceof Error ? err.message : 'Failed to load namespaces')
     } finally {
       setLoading(false)
+    }
+  }
+
+  const loadNamespaceColors = async (): Promise<void> => {
+    try {
+      const colors = await api.getNamespaceColors()
+      setNamespaceColors(colors)
+    } catch {
+      // Silently handle color loading failures
+    }
+  }
+
+  const handleColorChange = async (namespaceId: string, color: NamespaceColor): Promise<void> => {
+    // Optimistic update
+    const prevColors = { ...namespaceColors }
+    if (color) {
+      setNamespaceColors(prev => ({ ...prev, [namespaceId]: color }))
+    } else {
+      setNamespaceColors(prev =>
+        Object.fromEntries(Object.entries(prev).filter(([key]) => key !== namespaceId))
+      )
+    }
+
+    try {
+      await api.updateNamespaceColor(namespaceId, color)
+    } catch {
+      // Revert on failure
+      setNamespaceColors(prevColors)
     }
   }
 
@@ -326,16 +370,19 @@ export default function App(): React.JSX.Element {
     }
   }
 
-  const loadKeys = useCallback(async (namespaceId: string, append = false, cursor?: string) => {
+  const loadKeys = useCallback(async (namespaceId: string, append = false, cursor?: string, skipCache = false) => {
     try {
       setKeysLoading(true)
       setError('')
-      const options: { prefix?: string; cursor?: string } = {}
+      const options: { prefix?: string; cursor?: string; skipCache?: boolean } = {}
       if (keyPrefix) {
         options.prefix = keyPrefix
       }
       if (append && cursor) {
         options.cursor = cursor
+      }
+      if (skipCache) {
+        options.skipCache = true
       }
       const response = await api.listKeys(namespaceId, options)
       setKeys(prev => append ? [...prev, ...response.keys] : response.keys)
@@ -360,7 +407,17 @@ export default function App(): React.JSX.Element {
       try {
         JSON.parse(newKeyMetadata)
       } catch {
-        setError('Invalid JSON in metadata field')
+        setError('Invalid JSON in KV Native Metadata field')
+        return
+      }
+    }
+
+    // Validate custom metadata if provided
+    if (newKeyCustomMetadata.trim()) {
+      try {
+        JSON.parse(newKeyCustomMetadata)
+      } catch {
+        setError('Invalid JSON in Custom Metadata field')
         return
       }
     }
@@ -390,6 +447,7 @@ export default function App(): React.JSX.Element {
         options.metadata = JSON.parse(newKeyMetadata)
       }
 
+      // Create the key in KV
       await api.putKey(
         currentView.namespaceId,
         newKeyName.trim(),
@@ -397,11 +455,30 @@ export default function App(): React.JSX.Element {
         options
       )
 
+      // Save tags and custom metadata to D1 if provided
+      const hasTags = newKeyTags.length > 0
+      const hasCustomMetadata = newKeyCustomMetadata.trim()
+      if (hasTags || hasCustomMetadata) {
+        const d1Metadata: { tags?: string[]; custom_metadata?: Record<string, unknown> } = {}
+        if (hasTags) {
+          d1Metadata.tags = newKeyTags
+        }
+        if (hasCustomMetadata) {
+          d1Metadata.custom_metadata = JSON.parse(newKeyCustomMetadata) as Record<string, unknown>
+        }
+        await api.updateMetadata(currentView.namespaceId, newKeyName.trim(), d1Metadata)
+      }
+
       setShowCreateKeyDialog(false)
       setNewKeyName('')
       setNewKeyValue('')
       setNewKeyTTL('')
       setNewKeyMetadata('')
+      setNewKeyTags([])
+      setNewKeyTagInput('')
+      setNewKeyCustomMetadata('')
+      setIsNewKeyMetadataValid(true)
+      setIsNewKeyCustomMetadataValid(true)
 
       // Reset pagination and reload keys
       setKeysCursor(undefined)
@@ -455,7 +532,11 @@ export default function App(): React.JSX.Element {
       setSelectedKeys([])
       setKeysCursor(undefined)
       setKeysListComplete(true)
-      await loadKeys(currentView.namespaceId, false, undefined)
+      // Force fresh data fetch by resetting keys before reload
+      // This ensures React properly re-renders with updated expiration timestamps
+      setKeys([])
+      // Pass skipCache=true to bypass the API cache and get fresh data
+      await loadKeys(currentView.namespaceId, false, undefined, true)
     }
   }
 
@@ -492,14 +573,47 @@ export default function App(): React.JSX.Element {
       setKeysCursor(undefined)
       setKeysListComplete(true)
       loadKeys(currentView.namespaceId)
+      // Also load key colors
+      void (async (): Promise<void> => {
+        try {
+          const colors = await api.getKeyColors(currentView.namespaceId)
+          setKeyColors(colors)
+        } catch {
+          // Silently fail - colors are optional
+          setKeyColors({})
+        }
+      })()
     } else {
       setKeys([])
       setSelectedKeys([])
       setKeyPrefix('')
       setKeysCursor(undefined)
       setKeysListComplete(true)
+      setKeyColors({})
     }
   }, [currentView, keyPrefix, loadKeys])
+
+  // Handle key color change
+  const handleKeyColorChange = async (keyName: string, color: NamespaceColor): Promise<void> => {
+    if (currentView.type !== 'namespace') return
+
+    // Optimistic update
+    const prevColors = { ...keyColors }
+    if (color) {
+      setKeyColors(prev => ({ ...prev, [keyName]: color }))
+    } else {
+      setKeyColors(prev =>
+        Object.fromEntries(Object.entries(prev).filter(([key]) => key !== keyName))
+      )
+    }
+
+    try {
+      await api.updateKeyColor(currentView.namespaceId, keyName, color)
+    } catch {
+      // Revert on failure
+      setKeyColors(prevColors)
+    }
+  }
 
   // Import/Export handlers
   const handleExport = async (): Promise<void> => {
@@ -1126,6 +1240,7 @@ export default function App(): React.JSX.Element {
                             key={ns.id}
                             namespace={ns}
                             isSelected={selectedNamespaces.includes(ns.id)}
+                            color={namespaceColors[ns.id] as NamespaceColor}
                             onToggleSelection={() => toggleNamespaceSelection(ns.id)}
                             onBrowseKeys={() => setCurrentView({
                               type: 'namespace',
@@ -1139,6 +1254,7 @@ export default function App(): React.JSX.Element {
                             onSync={() => handleSyncNamespace(ns.id, ns.title)}
                             onRename={() => openRenameDialog(ns.id, ns.title)}
                             onDelete={() => handleDeleteNamespace(ns.id)}
+                            onColorChange={(color) => handleColorChange(ns.id, color)}
                           />
                         ))}
                       </tbody>
@@ -1151,12 +1267,18 @@ export default function App(): React.JSX.Element {
                   <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
                     {namespaces.filter(ns => ns.title.toLowerCase().includes(namespaceFilter.toLowerCase())).map((ns) => {
                       const isSelected = selectedNamespaces.includes(ns.id)
+                      const nsColor = namespaceColors[ns.id] as NamespaceColor
+                      const colorConfig = getColorConfig(nsColor)
                       return (
                         <Card
                           key={ns.id}
-                          className={`hover:shadow-lg transition-shadow relative ${isSelected ? 'ring-2 ring-primary' : ''
+                          className={`hover:shadow-lg transition-shadow relative overflow-hidden ${isSelected ? 'ring-2 ring-primary' : ''
                             }`}
                         >
+                          {/* Color stripe at bottom */}
+                          {colorConfig && (
+                            <div className={`absolute bottom-0 left-0 right-0 h-1 ${colorConfig.bgClass}`} />
+                          )}
                           <div className="absolute top-4 left-4 z-10">
                             <Checkbox
                               checked={isSelected}
@@ -1167,6 +1289,10 @@ export default function App(): React.JSX.Element {
                           <CardHeader className="pl-12">
                             <div className="flex items-start justify-between">
                               <Database className="h-8 w-8 text-primary" />
+                              <NamespaceColorPicker
+                                value={nsColor}
+                                onChange={(color) => handleColorChange(ns.id, color)}
+                              />
                             </div>
                             <CardTitle className="mt-4">{ns.title}</CardTitle>
                             <CardDescription
@@ -1456,14 +1582,20 @@ export default function App(): React.JSX.Element {
                               />
                             </td>
                             <td className="p-4">
-                              <div
-                                className="font-mono text-sm cursor-pointer hover:text-primary hover:underline"
-                                onClick={() => {
-                                  setSelectedKeyForEdit(key.name)
-                                  setEditKeyTimestamp(Date.now())
-                                }}
-                              >
-                                {key.name}
+                              <div className="flex items-center gap-2">
+                                <KeyColorPicker
+                                  value={keyColors[key.name] as NamespaceColor ?? null}
+                                  onChange={(color) => handleKeyColorChange(key.name, color)}
+                                />
+                                <div
+                                  className="font-mono text-sm cursor-pointer hover:text-primary hover:underline"
+                                  onClick={() => {
+                                    setSelectedKeyForEdit(key.name)
+                                    setEditKeyTimestamp(Date.now())
+                                  }}
+                                >
+                                  {key.name}
+                                </div>
                               </div>
                             </td>
                             <td className="p-4 text-sm text-muted-foreground">
@@ -1709,13 +1841,92 @@ export default function App(): React.JSX.Element {
             <JsonEditor
               id="key-metadata"
               name="key-metadata"
-              label="Metadata (JSON)"
+              label="KV Native Metadata (JSON)"
               value={newKeyMetadata}
               onChange={setNewKeyMetadata}
+              onValidityChange={setIsNewKeyMetadataValid}
               placeholder='{"key": "value"}'
-              helpText="Optional JSON metadata stored with the key (limited to 1024 bytes)"
+              helpText="Optional JSON metadata stored natively in KV (limited to 1024 bytes)"
               rows={3}
             />
+
+            {/* D1-Backed Tags & Metadata Section */}
+            <div className="border-t pt-4 mt-2">
+              <h4 className="font-semibold mb-2">D1-Backed Tags & Metadata</h4>
+              <p className="text-sm text-muted-foreground mb-4">
+                Tags and custom metadata stored in D1 for enhanced search and organization.
+              </p>
+
+              {/* Tags Section */}
+              <div className="space-y-2 mb-4">
+                <Label htmlFor="create-key-tag-input">Tags</Label>
+                <div className="flex gap-2">
+                  <Input
+                    id="create-key-tag-input"
+                    name="create-key-tag-input"
+                    value={newKeyTagInput}
+                    onChange={(e) => setNewKeyTagInput(e.target.value)}
+                    onKeyDown={(e) => {
+                      if (e.key === 'Enter') {
+                        e.preventDefault()
+                        const tag = newKeyTagInput.trim()
+                        if (tag && !newKeyTags.includes(tag)) {
+                          setNewKeyTags([...newKeyTags, tag])
+                          setNewKeyTagInput('')
+                        }
+                      }
+                    }}
+                    placeholder="Add a tag..."
+                    className="flex-1"
+                    autoComplete="off"
+                  />
+                  <Button
+                    type="button"
+                    onClick={() => {
+                      const tag = newKeyTagInput.trim()
+                      if (tag && !newKeyTags.includes(tag)) {
+                        setNewKeyTags([...newKeyTags, tag])
+                        setNewKeyTagInput('')
+                      }
+                    }}
+                    variant="outline"
+                    size="sm"
+                  >
+                    Add Tag
+                  </Button>
+                </div>
+                {newKeyTags.length > 0 && (
+                  <div className="flex flex-wrap gap-2 mt-2">
+                    {newKeyTags.map((tag) => (
+                      <Badge key={tag} variant="secondary" className="flex items-center gap-1">
+                        {tag}
+                        <button
+                          type="button"
+                          onClick={() => setNewKeyTags(newKeyTags.filter(t => t !== tag))}
+                          className="ml-1 hover:text-destructive"
+                          aria-label={`Remove tag ${tag}`}
+                        >
+                          <X className="h-3 w-3" />
+                        </button>
+                      </Badge>
+                    ))}
+                  </div>
+                )}
+              </div>
+
+              {/* Custom Metadata Section */}
+              <JsonEditor
+                id="create-key-custom-metadata"
+                name="create-key-custom-metadata"
+                label="Custom Metadata (JSON)"
+                value={newKeyCustomMetadata}
+                onChange={setNewKeyCustomMetadata}
+                onValidityChange={setIsNewKeyCustomMetadataValid}
+                placeholder='{"key": "value"}'
+                helpText="Enter valid JSON for custom metadata fields"
+                rows={4}
+              />
+            </div>
           </div>
           <DialogFooter>
             <Button
@@ -1726,6 +1937,11 @@ export default function App(): React.JSX.Element {
                 setNewKeyValue('')
                 setNewKeyTTL('')
                 setNewKeyMetadata('')
+                setNewKeyTags([])
+                setNewKeyTagInput('')
+                setNewKeyCustomMetadata('')
+                setIsNewKeyMetadataValid(true)
+                setIsNewKeyCustomMetadataValid(true)
               }}
               disabled={creatingKey}
             >
@@ -1733,7 +1949,7 @@ export default function App(): React.JSX.Element {
             </Button>
             <Button
               onClick={handleCreateKey}
-              disabled={creatingKey || !newKeyName.trim() || (newKeyTTL.trim() !== '' && parseInt(newKeyTTL) > 0 && parseInt(newKeyTTL) < 60)}
+              disabled={creatingKey || !newKeyName.trim() || !isNewKeyMetadataValid || !isNewKeyCustomMetadataValid || (newKeyTTL.trim() !== '' && parseInt(newKeyTTL) > 0 && parseInt(newKeyTTL) < 60)}
             >
               {creatingKey && <Loader2 className="h-4 w-4 mr-2 animate-spin" />}
               Create

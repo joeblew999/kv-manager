@@ -11,13 +11,16 @@ import {
 } from 'lucide-react'
 import { Button } from './ui/button'
 import { Checkbox } from './ui/checkbox'
-import type { KVNamespace } from '../services/api'
+import type { KVNamespace, NamespaceColor } from '../services/api'
+import { NamespaceColorPicker } from './NamespaceColorPicker'
 
 interface NamespaceListRowProps {
     /** Namespace data */
     namespace: KVNamespace
     /** Whether this namespace is selected */
     isSelected: boolean
+    /** Current color of the namespace */
+    color?: NamespaceColor
     /** Toggle selection callback */
     onToggleSelection: () => void
     /** Navigate to browse keys */
@@ -36,6 +39,8 @@ interface NamespaceListRowProps {
     onRename: () => void
     /** Delete namespace */
     onDelete: () => void
+    /** Change namespace color */
+    onColorChange: (color: NamespaceColor) => void
 }
 
 /**
@@ -47,6 +52,7 @@ interface NamespaceListRowProps {
 export function NamespaceListRow({
     namespace,
     isSelected,
+    color,
     onToggleSelection,
     onBrowseKeys,
     onExport,
@@ -56,6 +62,7 @@ export function NamespaceListRow({
     onSync,
     onRename,
     onDelete,
+    onColorChange,
 }: NamespaceListRowProps): React.JSX.Element {
     const handleCopyId = async (): Promise<void> => {
         await navigator.clipboard.writeText(namespace.id)
@@ -77,6 +84,10 @@ export function NamespaceListRow({
             {/* Namespace Title & ID */}
             <td className="p-4">
                 <div className="flex items-center gap-3">
+                    <NamespaceColorPicker
+                        value={color ?? null}
+                        onChange={onColorChange}
+                    />
                     <Database className="h-5 w-5 text-primary flex-shrink-0" />
                     <div>
                         <div

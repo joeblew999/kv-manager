@@ -38,7 +38,7 @@ The schema includes all tables needed for KV Manager. The in-app migration syste
 
 ## What Gets Migrated?
 
-The migration system tracks three initial migrations:
+The migration system tracks five migrations:
 
 ### Version 1: Initial Schema
 Base schema with namespaces, key_metadata, audit_log, and bulk_jobs tables.
@@ -48,6 +48,12 @@ Adds the `job_audit_events` table for tracking job lifecycle events (started, pr
 
 ### Version 3: Webhooks
 Adds the `webhooks` table for external observability notifications.
+
+### Version 4: Namespace Colors
+Adds the `namespace_colors` table for visual namespace organization with color tags.
+
+### Version 5: Key Colors
+Adds the `key_colors` table for visual key organization with color tags.
 
 ## Troubleshooting
 

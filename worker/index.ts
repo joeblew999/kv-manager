@@ -13,6 +13,7 @@ import { handleAdminRoutes } from './routes/admin';
 import { handleR2BackupRoutes } from './routes/r2-backup';
 import { handleMetricsRoutes } from './routes/metrics';
 import { handleMigrationRoutes } from './routes/migrations';
+import { handleColorRoutes } from './routes/colors';
 
 /**
  * Main request handler
@@ -53,6 +54,10 @@ async function handleApiRequest(request: Request, env: Env): Promise<Response> {
   const isLocalDev = isLocalhost && (!env.ACCOUNT_ID || !env.API_KEY);
 
   // Route API requests
+  // Handle namespace colors first (more specific route)
+  const colorResponse = await handleColorRoutes(request, env, url, corsHeaders, isLocalDev, userEmail);
+  if (colorResponse) return colorResponse;
+
   if (url.pathname.startsWith('/api/namespaces')) {
     return await handleNamespaceRoutes(request, env, url, corsHeaders, isLocalDev, userEmail);
   }

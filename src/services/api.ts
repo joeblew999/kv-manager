@@ -180,7 +180,21 @@ export interface KVNamespace {
   first_accessed?: string
   last_accessed?: string
   estimated_key_count?: number
+  color?: NamespaceColor
 }
+
+// Namespace color type
+export type NamespaceColor =
+  | 'red' | 'red-light' | 'red-dark'
+  | 'orange' | 'orange-light' | 'amber'
+  | 'yellow' | 'yellow-light' | 'lime'
+  | 'green' | 'green-light' | 'emerald'
+  | 'teal' | 'cyan' | 'sky'
+  | 'blue' | 'blue-light' | 'indigo'
+  | 'purple' | 'violet' | 'fuchsia'
+  | 'pink' | 'rose' | 'pink-light'
+  | 'gray' | 'slate' | 'zinc'
+  | null
 
 // KV Key types
 export interface KVKey {
@@ -425,6 +439,110 @@ class APIService {
 
       return result
     })
+  }
+
+  /**
+   * Get all namespace colors
+   */
+  async getNamespaceColors(skipCache = false): Promise<Record<string, string>> {
+    const cacheKey = 'namespaces:colors'
+
+    if (!skipCache) {
+      const cached = getFromCache<Record<string, string>>(cacheKey, CACHE_TTL.DEFAULT)
+      if (cached) {
+        return cached
+      }
+    }
+
+    return deduplicateRequest(cacheKey, async () => {
+      const response = await fetchWithBackoff(
+        `${WORKER_API}/api/namespaces/colors`,
+        this.getFetchOptions()
+      )
+
+      await this.handleResponse(response)
+
+      const data = await response.json()
+      const result = data.result || {}
+
+      setInCache(cacheKey, result)
+
+      return result
+    })
+  }
+
+  /**
+   * Update namespace color
+   */
+  async updateNamespaceColor(namespaceId: string, color: NamespaceColor): Promise<void> {
+    const response = await fetchWithBackoff(
+      `${WORKER_API}/api/namespaces/${namespaceId}/color`,
+      {
+        method: 'PUT',
+        headers: {
+          'Content-Type': 'application/json'
+        },
+        credentials: 'include',
+        body: JSON.stringify({ color })
+      }
+    )
+
+    await this.handleResponse(response)
+
+    // Invalidate colors cache
+    invalidateCache('namespaces:colors')
+  }
+
+  /**
+   * Get all key colors for a namespace
+   */
+  async getKeyColors(namespaceId: string, skipCache = false): Promise<Record<string, string>> {
+    const cacheKey = `keys:colors:${namespaceId}`
+
+    if (!skipCache) {
+      const cached = getFromCache<Record<string, string>>(cacheKey, CACHE_TTL.DEFAULT)
+      if (cached) {
+        return cached
+      }
+    }
+
+    return deduplicateRequest(cacheKey, async () => {
+      const response = await fetchWithBackoff(
+        `${WORKER_API}/api/keys/${namespaceId}/colors`,
+        this.getFetchOptions()
+      )
+
+      await this.handleResponse(response)
+
+      const data = await response.json()
+      const result = data.result || {}
+
+      setInCache(cacheKey, result)
+
+      return result
+    })
+  }
+
+  /**
+   * Update key color
+   */
+  async updateKeyColor(namespaceId: string, keyName: string, color: NamespaceColor): Promise<void> {
+    const response = await fetchWithBackoff(
+      `${WORKER_API}/api/keys/${namespaceId}/${encodeURIComponent(keyName)}/color`,
+      {
+        method: 'PUT',
+        headers: {
+          'Content-Type': 'application/json'
+        },
+        credentials: 'include',
+        body: JSON.stringify({ color })
+      }
+    )
+
+    await this.handleResponse(response)
+
+    // Invalidate key colors cache for this namespace
+    invalidateCache(`keys:colors:${namespaceId}`)
   }
 
   /**

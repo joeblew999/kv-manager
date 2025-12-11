@@ -156,8 +156,42 @@ export const MIGRATIONS: Migration[] = [
 
       CREATE INDEX IF NOT EXISTS idx_webhooks_enabled ON webhooks(enabled);
     `
+    },
+    {
+        version: 4,
+        name: 'namespace_colors',
+        description: 'Add namespace_colors table for visual organization',
+        sql: `
+      CREATE TABLE IF NOT EXISTS namespace_colors (
+        namespace_id TEXT PRIMARY KEY,
+        color TEXT NOT NULL,
+        updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+        updated_by TEXT
+      );
+
+      CREATE INDEX IF NOT EXISTS idx_namespace_colors_updated ON namespace_colors(updated_at DESC);
+    `
+    },
+    {
+        version: 5,
+        name: 'key_colors',
+        description: 'Add key_colors table for key visual organization',
+        sql: `
+      CREATE TABLE IF NOT EXISTS key_colors (
+        namespace_id TEXT NOT NULL,
+        key_name TEXT NOT NULL,
+        color TEXT NOT NULL,
+        updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+        updated_by TEXT,
+        PRIMARY KEY (namespace_id, key_name)
+      );
+
+      CREATE INDEX IF NOT EXISTS idx_key_colors_namespace ON key_colors(namespace_id);
+      CREATE INDEX IF NOT EXISTS idx_key_colors_updated ON key_colors(updated_at DESC);
+    `
     }
 ];
+
 
 // ============================================
 // Migration Functions

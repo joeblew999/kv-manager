@@ -65,6 +65,42 @@ CREATE TABLE job_audit_events (
   FOREIGN KEY (job_id) REFERENCES bulk_jobs(job_id)
 );
 
+
 CREATE INDEX idx_job_audit_events_job_id ON job_audit_events(job_id, timestamp DESC);
 CREATE INDEX idx_job_audit_events_user ON job_audit_events(user_email, timestamp DESC);
 
+-- Webhooks for external notifications
+CREATE TABLE webhooks (
+  id TEXT PRIMARY KEY,
+  url TEXT NOT NULL,
+  events TEXT NOT NULL,
+  secret TEXT,
+  enabled INTEGER DEFAULT 1,
+  created_at TEXT DEFAULT (datetime('now')),
+  updated_at TEXT DEFAULT (datetime('now'))
+);
+
+CREATE INDEX idx_webhooks_enabled ON webhooks(enabled);
+
+-- Namespace colors for visual organization
+CREATE TABLE namespace_colors (
+  namespace_id TEXT PRIMARY KEY,
+  color TEXT NOT NULL,
+  updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+  updated_by TEXT
+);
+
+CREATE INDEX idx_namespace_colors_updated ON namespace_colors(updated_at DESC);
+
+-- Key colors for visual organization
+CREATE TABLE key_colors (
+  namespace_id TEXT NOT NULL,
+  key_name TEXT NOT NULL,
+  color TEXT NOT NULL,
+  updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+  updated_by TEXT,
+  PRIMARY KEY (namespace_id, key_name)
+);
+
+CREATE INDEX idx_key_colors_namespace ON key_colors(namespace_id);
+CREATE INDEX idx_key_colors_updated ON key_colors(updated_at DESC);
