@@ -218,7 +218,7 @@ export async function handleColorRoutes(
 
             return new Response(JSON.stringify({
                 error: 'Failed to update color',
-                message: errorMessage,
+                message: 'An unexpected error occurred while updating the namespace color. Please try again.',
                 success: false
             }), {
                 status: 500,
@@ -351,7 +351,7 @@ export async function handleColorRoutes(
 
             return new Response(JSON.stringify({
                 error: 'Failed to update key color',
-                message: errorMessage,
+                message: 'An unexpected error occurred while updating the key color. Please try again.',
                 success: false
             }), {
                 status: 500,

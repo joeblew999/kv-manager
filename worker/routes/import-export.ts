@@ -530,10 +530,9 @@ export async function handleImportExportRoutes(
         await logError(env, dbError instanceof Error ? dbError : String(dbError), createErrorContext('jobs', 'get_job_events', {
           metadata: { jobId }
         }), isLocalDev);
-        const errorMessage = dbError instanceof Error ? dbError.message : 'Database query failed';
         return new Response(JSON.stringify({
           error: 'Database error',
-          message: errorMessage
+          message: 'An unexpected error occurred while retrieving job events. Please try again.'
         }), {
           status: 500,
           headers: { 'Content-Type': 'application/json', ...corsHeaders }
