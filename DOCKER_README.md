@@ -17,7 +17,7 @@ A full-featured management platform for Cloudflare Workers KV, designed for engi
 
 ## Tech Stack
 
-**Frontend**: React 19.2.3 | TypeScript 5.9.3 | Vite 7.3.0 | Tailwind CSS 3.4.19 | shadcn/ui
+**Frontend**: React 19.2.3 | TypeScript 5.9.3 | Vite 7.3.0 | Tailwind CSS 4.1.17 | shadcn/ui
 
 **Backend**: Cloudflare Workers + KV + D1 + R2 + Durable Objects + Zero Trust
 
