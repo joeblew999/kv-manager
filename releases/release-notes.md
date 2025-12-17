@@ -26,7 +26,7 @@ Multi-namespace backup and restore operations to/from R2 for efficient bulk mana
 
 **Database Migration Required:**
 - Migration 003 adds `metadata` column to `bulk_jobs` table for storing batch operation details
-- See [MIGRATION_GUIDE.md](../MIGRATION_GUIDE.md) for instructions
+- See the [Migration Guide](https://github.com/neverinfamous/kv-manager/wiki/Migration-Guide) for instructions
 
 ### R2 Backup & Restore
 Complete R2 integration for secure namespace backups directly to Cloudflare R2 storage:
@@ -67,7 +67,7 @@ Progress tracking has been simplified to use HTTP polling instead of WebSockets:
 - **No Connection Issues** - Eliminates WebSocket connection failures and rate limiting
 
 **Migration Required:**
-- Database migration needed for existing installations (see [MIGRATION_GUIDE.md](../MIGRATION_GUIDE.md))
+- Database migration needed for existing installations (see the [Migration Guide](https://github.com/neverinfamous/kv-manager/wiki/Migration-Guide))
 - Single migration file adds: `job_audit_events` table and progress tracking columns
 - Idempotent and safe to run multiple times
 
