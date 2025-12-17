@@ -1,6 +1,6 @@
 # Cloudflare KV Manager
 
-Last Updated December 11, 2025 - Production/Stable Version 2.1.0 
+Last Updated December 17, 2025 - Production/Stable Version 2.1.0 
 
 [![GitHub](https://img.shields.io/badge/GitHub-neverinfamous/kv--manager-blue?logo=github)](https://github.com/neverinfamous/kv-manager)
 [![Docker Pulls](https://img.shields.io/docker/pulls/writenotenow/kv-manager)](https://hub.docker.com/r/writenotenow/kv-manager)
