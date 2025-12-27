@@ -31,7 +31,7 @@ export interface Webhook {
   url: string
   secret: string | null
   events: string // JSON array of WebhookEventType
-  enabled: number
+  enabled: boolean
   created_at: string
   updated_at: string
 }

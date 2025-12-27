@@ -189,6 +189,14 @@ export const MIGRATIONS: Migration[] = [
       CREATE INDEX IF NOT EXISTS idx_key_colors_namespace ON key_colors(namespace_id);
       CREATE INDEX IF NOT EXISTS idx_key_colors_updated ON key_colors(updated_at DESC);
     `
+    },
+    {
+        version: 6,
+        name: 'webhooks_add_name',
+        description: 'Add name column to webhooks table',
+        sql: `
+      ALTER TABLE webhooks ADD COLUMN name TEXT NOT NULL DEFAULT '';
+    `
     }
 ];
 
@@ -309,7 +317,21 @@ export async function applyMigrations(db: D1Database): Promise<MigrationResult> 
                     .filter(s => s.length > 0);
 
                 for (const statement of statements) {
-                    await db.prepare(statement).run();
+                    try {
+                        await db.prepare(statement).run();
+                    } catch (stmtErr) {
+                        const stmtError = stmtErr instanceof Error ? stmtErr.message : String(stmtErr);
+                        // Handle idempotent ALTER TABLE ADD COLUMN - if column already exists, treat as success
+                        if (statement.toLowerCase().includes('alter table') &&
+                            statement.toLowerCase().includes('add column') &&
+                            stmtError.includes('duplicate column name')) {
+                            logInfo(`Column already exists, skipping: ${statement.substring(0, 50)}...`, createErrorContext('migrations', 'apply_single', {
+                                metadata: { version: migration.version, statement: statement.substring(0, 100) }
+                            }));
+                            continue; // Column already exists, that's fine
+                        }
+                        throw stmtErr; // Re-throw other errors
+                    }
                 }
 
                 // Record the migration as applied

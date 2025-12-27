@@ -1,6 +1,6 @@
 # Cloudflare KV Manager
 
-Last Updated December 17, 2025 - Production/Stable Version 2.1.0 
+Last Updated December 27, 2025 - Production/Stable Version 2.1.0 
 
 [![GitHub](https://img.shields.io/badge/GitHub-neverinfamous/kv--manager-blue?logo=github)](https://github.com/neverinfamous/kv-manager)
 [![Docker Pulls](https://img.shields.io/docker/pulls/writenotenow/kv-manager)](https://hub.docker.com/r/writenotenow/kv-manager)
@@ -33,6 +33,7 @@ A full-featured management platform for Cloudflare Workers KV, designed for engi
 - **☁️ R2 Backup & Restore** - Cloud-native backup with batch operations
 - **📈 Job History** - Complete audit trail with event timelines and advanced filtering
 - **📊 NEW! Metrics Dashboard** - View KV analytics, operation counts, and latency percentiles
+- **🔔 Webhooks** - Event-driven HTTP notifications for key operations, bulk jobs, and failures
 - **🔐 Enterprise Auth** - Cloudflare Access (Zero Trust) integration
 - **🎨 Modern UI** - Dark/light themes, responsive design, built with React + Tailwind CSS
 

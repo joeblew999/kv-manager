@@ -100,7 +100,7 @@ export function WebhookManager(): React.ReactElement {
     } catch {
       setFormEvents([])
     }
-    setFormEnabled(webhook.enabled === 1)
+    setFormEnabled(webhook.enabled)
     setEditingWebhook(webhook)
   }
 
@@ -176,8 +176,8 @@ export function WebhookManager(): React.ReactElement {
       const result = await webhookApi.test(webhookId)
       setTestResult({
         success: result.success,
-        message: result.success 
-          ? `Test successful (HTTP ${String(result.statusCode ?? 200)})` 
+        message: result.success
+          ? `Test successful (HTTP ${String(result.statusCode ?? 200)})`
           : (result.error ?? 'Test failed'),
       })
     } catch (err) {
@@ -192,7 +192,7 @@ export function WebhookManager(): React.ReactElement {
 
   const handleToggleEnabled = async (webhook: Webhook): Promise<void> => {
     try {
-      await webhookApi.update(webhook.id, { enabled: webhook.enabled !== 1 })
+      await webhookApi.update(webhook.id, { enabled: !webhook.enabled })
       await loadWebhooks()
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to toggle webhook')
@@ -268,11 +268,10 @@ export function WebhookManager(): React.ReactElement {
       {/* Test Result Toast */}
       {testResult && (
         <div
-          className={`mb-6 px-4 py-3 rounded-lg flex items-center gap-2 ${
-            testResult.success
-              ? 'bg-green-100 text-green-800 dark:bg-green-900 dark:text-green-200'
-              : 'bg-red-100 text-red-800 dark:bg-red-900 dark:text-red-200'
-          }`}
+          className={`mb-6 px-4 py-3 rounded-lg flex items-center gap-2 ${testResult.success
+            ? 'bg-green-100 text-green-800 dark:bg-green-900 dark:text-green-200'
+            : 'bg-red-100 text-red-800 dark:bg-red-900 dark:text-red-200'
+            }`}
         >
           {testResult.success ? (
             <CheckCircle2 className="h-5 w-5" />
@@ -318,11 +317,11 @@ export function WebhookManager(): React.ReactElement {
           {webhooks.map((webhook) => {
             const events = parseEvents(webhook.events)
             return (
-              <Card key={webhook.id} className={webhook.enabled === 0 ? 'opacity-60' : ''}>
+              <Card key={webhook.id} className={!webhook.enabled ? 'opacity-60' : ''}>
                 <CardHeader className="pb-2">
                   <div className="flex items-center justify-between">
                     <div className="flex items-center gap-3">
-                      <Bell className={`h-5 w-5 ${webhook.enabled === 1 ? 'text-primary' : 'text-muted-foreground'}`} />
+                      <Bell className={`h-5 w-5 ${webhook.enabled ? 'text-primary' : 'text-muted-foreground'}`} />
                       <div>
                         <CardTitle className="text-base flex items-center gap-2">
                           {webhook.name}
@@ -342,13 +341,12 @@ export function WebhookManager(): React.ReactElement {
                     </div>
                     <div className="flex items-center gap-2">
                       <span
-                        className={`text-xs px-2 py-1 rounded-full ${
-                          webhook.enabled === 1
+                        className={`text-xs px-2 py-1 rounded-full ${webhook.enabled
                             ? 'bg-green-100 text-green-800 dark:bg-green-900 dark:text-green-200'
                             : 'bg-gray-100 text-gray-800 dark:bg-gray-800 dark:text-gray-200'
-                        }`}
+                          }`}
                       >
-                        {webhook.enabled === 1 ? 'Enabled' : 'Disabled'}
+                        {webhook.enabled ? 'Enabled' : 'Disabled'}
                       </span>
                     </div>
                   </div>
@@ -387,7 +385,7 @@ export function WebhookManager(): React.ReactElement {
                         variant="outline"
                         onClick={() => void handleToggleEnabled(webhook)}
                       >
-                        {webhook.enabled === 1 ? 'Disable' : 'Enable'}
+                        {webhook.enabled ? 'Disable' : 'Enable'}
                       </Button>
                       <Button
                         size="sm"
@@ -410,7 +408,8 @@ export function WebhookManager(): React.ReactElement {
             )
           })}
         </div>
-      )}
+      )
+      }
 
       {/* Create/Edit Dialog */}
       <Dialog
@@ -545,7 +544,7 @@ export function WebhookManager(): React.ReactElement {
           </DialogFooter>
         </DialogContent>
       </Dialog>
-    </div>
+    </div >
   )
 }
 

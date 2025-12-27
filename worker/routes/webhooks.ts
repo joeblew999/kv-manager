@@ -39,6 +39,7 @@ function nowISO(): string {
 function dbToWebhook(db: WebhookDB): Webhook {
   const webhook: Webhook = {
     id: db.id,
+    name: db.name,
     url: db.url,
     events: JSON.parse(db.events),
     enabled: db.enabled === 1,
@@ -59,6 +60,7 @@ function dbToWebhook(db: WebhookDB): Webhook {
 const MOCK_WEBHOOKS: Webhook[] = [
   {
     id: 'whk_mock1',
+    name: 'Slack Notifications',
     url: 'https://hooks.slack.com/services/xxx/yyy/zzz',
     events: ['job.failed', 'job.completed'],
     enabled: true,
@@ -245,6 +247,7 @@ async function createWebhook(
     if (isLocalDev) {
       const newWebhook: Webhook = {
         id: webhookId,
+        name: body.name,
         url: body.url,
         events: body.events as import('../types').WebhookEventType[],
         enabled: body.enabled ?? true,
@@ -259,10 +262,11 @@ async function createWebhook(
     }
 
     await env.METADATA.prepare(
-      `INSERT INTO webhooks (id, url, secret, events, enabled, created_at, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?)`
+      `INSERT INTO webhooks (id, name, url, secret, events, enabled, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
     ).bind(
       webhookId,
+      body.name,
       body.url,
       body.secret ?? null,
       JSON.stringify(body.events),

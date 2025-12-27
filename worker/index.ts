@@ -14,6 +14,7 @@ import { handleR2BackupRoutes } from './routes/r2-backup';
 import { handleMetricsRoutes } from './routes/metrics';
 import { handleMigrationRoutes } from './routes/migrations';
 import { handleColorRoutes } from './routes/colors';
+import { handleWebhookRoutes } from './routes/webhooks';
 
 /**
  * Main request handler
@@ -126,6 +127,11 @@ async function handleApiRequest(request: Request, env: Env): Promise<Response> {
   if (url.pathname.startsWith('/api/migrations')) {
     const migrationResponse = await handleMigrationRoutes(request, env, url, corsHeaders, isLocalDev, userEmail);
     if (migrationResponse) return migrationResponse;
+  }
+
+  if (url.pathname.startsWith('/api/webhooks')) {
+    const webhookResponse = await handleWebhookRoutes(request, env, url, corsHeaders, isLocalDev, userEmail);
+    if (webhookResponse) return webhookResponse;
   }
 
   // 404 for unknown API routes

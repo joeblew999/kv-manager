@@ -112,6 +112,7 @@ export async function getWebhooksForEvent(
         if (events.includes(event)) {
           const webhook: Webhook = {
             id: webhookDB.id,
+            name: webhookDB.name,
             url: webhookDB.url,
             events: events as WebhookEventType[],
             enabled: webhookDB.enabled === 1,

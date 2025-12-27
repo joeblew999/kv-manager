@@ -213,6 +213,7 @@ export interface MockKVData {
 // Database representation (as stored in D1)
 export interface WebhookDB {
   id: string
+  name: string
   url: string
   events: string // JSON string of WebhookEventType[]
   secret?: string | null
@@ -224,6 +225,7 @@ export interface WebhookDB {
 // API representation (for frontend/API responses)
 export interface Webhook {
   id: string
+  name: string
   url: string
   events: WebhookEventType[]
   secret?: string

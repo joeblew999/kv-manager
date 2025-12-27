@@ -3,7 +3,7 @@ import { api, type KVNamespace, type KVKey, type JobProgress, type R2BackupListI
 import { auth } from './services/auth'
 import { useTheme } from './hooks/useTheme'
 import { useNamespaceViewPreference } from './hooks/useNamespaceViewPreference'
-import { Database, Plus, Moon, Sun, Monitor, Loader2, Trash2, Key, Search, History, Download, Upload, Copy, Clock, Tag, RefreshCw, Pencil, ExternalLink, BarChart2, ArrowUpCircle, Check, X } from 'lucide-react'
+import { Database, Plus, Moon, Sun, Monitor, Loader2, Trash2, Key, Search, History, Download, Upload, Copy, Clock, Tag, RefreshCw, Pencil, ExternalLink, BarChart2, ArrowUpCircle, Check, X, Bell } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Checkbox } from '@/components/ui/checkbox'
 import {
@@ -40,6 +40,7 @@ const SearchKeys = lazy(() => import('./components/SearchKeys').then(m => ({ def
 const AuditLog = lazy(() => import('./components/AuditLog').then(m => ({ default: m.AuditLog })))
 const JobHistory = lazy(() => import('./components/JobHistory').then(m => ({ default: m.JobHistory })))
 const KVMetrics = lazy(() => import('./components/KVMetrics').then(m => ({ default: m.KVMetrics })))
+const WebhookManager = lazy(() => import('./components/WebhookManager').then(m => ({ default: m.WebhookManager })))
 
 type View =
   | { type: 'list' }
@@ -48,6 +49,7 @@ type View =
   | { type: 'metrics' }
   | { type: 'audit'; namespaceId?: string }
   | { type: 'job-history' }
+  | { type: 'webhooks' }
 
 export default function App(): React.JSX.Element {
   const [namespaces, setNamespaces] = useState<KVNamespace[]>([])
@@ -978,6 +980,13 @@ export default function App(): React.JSX.Element {
                 <History className="h-4 w-4 mr-2" />
                 Job History
               </Button>
+              <Button
+                variant={currentView.type === 'webhooks' ? 'default' : 'ghost'}
+                onClick={() => setCurrentView({ type: 'webhooks' })}
+              >
+                <Bell className="h-4 w-4 mr-2" />
+                Webhooks
+              </Button>
             </div>
           )}
         </div>
@@ -1702,6 +1711,11 @@ export default function App(): React.JSX.Element {
               namespaces={namespaces}
               {...(currentView.namespaceId ? { selectedNamespaceId: currentView.namespaceId } : {})}
             />
+          )}
+
+          {/* Webhooks View */}
+          {currentView.type === 'webhooks' && (
+            <WebhookManager />
           )}
         </Suspense>
       </main>
