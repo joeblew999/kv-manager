@@ -21,6 +21,24 @@ updates:
         update-types: ["version-update:semver-major"]
       - dependency-name: "tailwindcss"
         update-types: ["version-update:semver-major"]
+    groups:
+      eslint:
+        patterns:
+          - "eslint"
+          - "eslint-*"
+          - "@eslint/*"
+          - "typescript-eslint"
+          - "globals"
+      types:
+        patterns:
+          - "@types/react"
+          - "@types/react-dom"
+          - "@types/node"
+      ui-frameworks:
+        patterns:
+          - "@radix-ui/*"
+          - "tailwindcss"
+          - "@tailwindcss/*"
 
   # GitHub Actions
   - package-ecosystem: "github-actions"
