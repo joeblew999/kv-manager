@@ -15,6 +15,8 @@ import { handleMetricsRoutes } from './routes/metrics';
 import { handleMigrationRoutes } from './routes/migrations';
 import { handleColorRoutes } from './routes/colors';
 import { handleWebhookRoutes } from './routes/webhooks';
+import { handleHealthRoutes } from './routes/health';
+import { handleMigrateRoutes } from './routes/migrate';
 
 /**
  * Main request handler
@@ -75,6 +77,10 @@ async function handleApiRequest(request: Request, env: Env): Promise<Response> {
     return await handleSearchRoutes(request, env, url, corsHeaders, isLocalDev, userEmail);
   }
 
+  if (url.pathname.startsWith('/api/health')) {
+    return await handleHealthRoutes(request, env, url, corsHeaders, isLocalDev, userEmail);
+  }
+
   if (url.pathname.startsWith('/api/metrics')) {
     return await handleMetricsRoutes(request, env, url, corsHeaders, isLocalDev, userEmail);
   }
@@ -132,6 +138,11 @@ async function handleApiRequest(request: Request, env: Env): Promise<Response> {
   if (url.pathname.startsWith('/api/webhooks')) {
     const webhookResponse = await handleWebhookRoutes(request, env, url, corsHeaders, isLocalDev, userEmail);
     if (webhookResponse) return webhookResponse;
+  }
+
+  if (url.pathname.startsWith('/api/migrate')) {
+    const migrateResponse = await handleMigrateRoutes(request, env, url, corsHeaders, isLocalDev, userEmail);
+    if (migrateResponse) return migrateResponse;
   }
 
   // 404 for unknown API routes

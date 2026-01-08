@@ -10,7 +10,7 @@ export function createCfApiRequest(endpoint: string, env: Env, init?: RequestIni
 
   const headers = new Headers(init?.headers || {});
   headers.set('Authorization', `Bearer ${env.API_KEY}`);
-  
+
   // Only set Content-Type if not using FormData (FormData sets its own Content-Type with boundary)
   const isFormData = init?.body instanceof FormData;
   if (!isFormData && !headers.has('Content-Type')) {
@@ -21,6 +21,13 @@ export function createCfApiRequest(endpoint: string, env: Env, init?: RequestIni
     ...init,
     headers
   });
+}
+
+/**
+ * Generate a unique job ID with optional prefix
+ */
+export function generateJobId(prefix = 'job'): string {
+  return `${prefix}-${Date.now()}-${Math.random().toString(36).slice(2, 11)}`;
 }
 
 /**

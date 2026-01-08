@@ -3,7 +3,7 @@ import { api, type KVNamespace, type KVKey, type JobProgress, type R2BackupListI
 import { auth } from './services/auth'
 import { useTheme } from './hooks/useTheme'
 import { useNamespaceViewPreference } from './hooks/useNamespaceViewPreference'
-import { Database, Plus, Moon, Sun, Monitor, Loader2, Trash2, Key, Search, History, Download, Upload, Copy, Clock, Tag, RefreshCw, Pencil, ExternalLink, BarChart2, ArrowUpCircle, Check, X, Bell } from 'lucide-react'
+import { Database, Plus, Moon, Sun, Monitor, Loader2, Trash2, Key, Search, History, Download, Upload, Copy, Clock, Tag, RefreshCw, Pencil, ExternalLink, BarChart2, ArrowUpCircle, ArrowRight, Check, X, Bell, Activity } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Checkbox } from '@/components/ui/checkbox'
 import {
@@ -33,7 +33,9 @@ import { ViewToggle } from './components/ui/ViewToggle'
 import { NamespaceListRow } from './components/NamespaceListRow'
 import { NamespaceColorPicker } from './components/NamespaceColorPicker'
 import { KeyColorPicker } from './components/KeyColorPicker'
+import { MigrateDialog, type CutoverMode } from './components/MigrateDialog'
 import { getColorConfig } from './utils/namespaceColors'
+import { migrateKeys, migrateNamespace, toBulkJobResponse } from './services/migrateApi'
 
 // Lazy-loaded components for code-splitting (reduces initial bundle by ~70KB)
 const SearchKeys = lazy(() => import('./components/SearchKeys').then(m => ({ default: m.SearchKeys })))
@@ -41,12 +43,14 @@ const AuditLog = lazy(() => import('./components/AuditLog').then(m => ({ default
 const JobHistory = lazy(() => import('./components/JobHistory').then(m => ({ default: m.JobHistory })))
 const KVMetrics = lazy(() => import('./components/KVMetrics').then(m => ({ default: m.KVMetrics })))
 const WebhookManager = lazy(() => import('./components/WebhookManager').then(m => ({ default: m.WebhookManager })))
+const HealthDashboard = lazy(() => import('./components/HealthDashboard').then(m => ({ default: m.HealthDashboard })))
 
 type View =
   | { type: 'list' }
   | { type: 'namespace'; namespaceId: string; namespaceTitle: string }
   | { type: 'search' }
   | { type: 'metrics' }
+  | { type: 'health' }
   | { type: 'audit'; namespaceId?: string }
   | { type: 'job-history' }
   | { type: 'webhooks' }
@@ -160,6 +164,9 @@ export default function App(): React.JSX.Element {
   const [migrationLoading, setMigrationLoading] = useState(false)
   const [migrationError, setMigrationError] = useState<string | null>(null)
   const [migrationSuccess, setMigrationSuccess] = useState(false)
+
+  // Cross-namespace migration dialog state
+  const [showMigrateDialog, setShowMigrateDialog] = useState(false)
 
   // Check migration status and load namespaces on mount
   useEffect(() => {
@@ -540,6 +547,12 @@ export default function App(): React.JSX.Element {
       // Pass skipCache=true to bypass the API cache and get fresh data
       await loadKeys(currentView.namespaceId, false, undefined, true)
     }
+
+    // Refresh namespace list after migration to update Est. Keys counts
+    if (result.status === 'completed' && progressOperationName === 'Key Migration') {
+      api.invalidateNamespaceCache()
+      await loadNamespaces()
+    }
   }
 
   // Rename key handler
@@ -902,6 +915,55 @@ export default function App(): React.JSX.Element {
     setShowImportDialog(true)
   }
 
+  // Cross-namespace migration handler
+  const handleMigrate = async (params: {
+    sourceNamespaceId: string;
+    targetNamespaceId: string;
+    keys?: string[];
+    cutoverMode: CutoverMode;
+    migrateMetadata: boolean;
+    preserveTTL: boolean;
+    createBackup: boolean;
+  }): Promise<void> => {
+    try {
+      setError('')
+
+      // Determine if migrating selected keys or entire namespace
+      const result = params.keys && params.keys.length > 0
+        ? await migrateKeys({
+          sourceNamespaceId: params.sourceNamespaceId,
+          targetNamespaceId: params.targetNamespaceId,
+          keys: params.keys,
+          cutoverMode: params.cutoverMode,
+          migrateMetadata: params.migrateMetadata,
+          preserveTTL: params.preserveTTL,
+          createBackup: params.createBackup,
+        })
+        : await migrateNamespace({
+          sourceNamespaceId: params.sourceNamespaceId,
+          targetNamespaceId: params.targetNamespaceId,
+          cutoverMode: params.cutoverMode,
+          migrateMetadata: params.migrateMetadata,
+          preserveTTL: params.preserveTTL,
+          createBackup: params.createBackup,
+        });
+
+      setShowMigrateDialog(false);
+
+      // Convert to bulk job response and open progress dialog
+      const bulkResponse = toBulkJobResponse(result);
+      setProgressJobId(bulkResponse.job_id);
+      setProgressWsUrl(bulkResponse.ws_url);
+      setProgressOperationName('Key Migration');
+      const targetNs = namespaces.find(n => n.id === params.targetNamespaceId);
+      setProgressNamespace(`→ ${targetNs?.title || params.targetNamespaceId}`);
+      setShowProgressDialog(true);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to start migration');
+      throw err; // Re-throw so dialog shows error
+    }
+  }
+
   return (
     <div className="min-h-screen bg-background">
       {/* Header */}
@@ -979,6 +1041,13 @@ export default function App(): React.JSX.Element {
               >
                 <History className="h-4 w-4 mr-2" />
                 Job History
+              </Button>
+              <Button
+                variant={currentView.type === 'health' ? 'default' : 'ghost'}
+                onClick={() => setCurrentView({ type: 'health' })}
+              >
+                <Activity className="h-4 w-4 mr-2" />
+                Health
               </Button>
               <Button
                 variant={currentView.type === 'webhooks' ? 'default' : 'ghost'}
@@ -1498,6 +1567,14 @@ export default function App(): React.JSX.Element {
                   <Button
                     variant="outline"
                     size="sm"
+                    onClick={() => setShowMigrateDialog(true)}
+                  >
+                    <ArrowRight className="h-4 w-4 mr-2" />
+                    Migrate
+                  </Button>
+                  <Button
+                    variant="outline"
+                    size="sm"
                     onClick={() => setShowBulkTTLDialog(true)}
                   >
                     <Clock className="h-4 w-4 mr-2" />
@@ -1711,6 +1788,11 @@ export default function App(): React.JSX.Element {
               namespaces={namespaces}
               {...(currentView.namespaceId ? { selectedNamespaceId: currentView.namespaceId } : {})}
             />
+          )}
+
+          {/* Health Dashboard View */}
+          {currentView.type === 'health' && (
+            <HealthDashboard />
           )}
 
           {/* Webhooks View */}
@@ -2446,6 +2528,21 @@ export default function App(): React.JSX.Element {
           }
         }}
       />
+
+      {/* Migration Dialog */}
+      {showMigrateDialog && (
+        <MigrateDialog
+          open={showMigrateDialog}
+          namespaces={namespaces}
+          {...(currentView.type === 'namespace' ? {
+            sourceNamespaceId: currentView.namespaceId,
+            sourceNamespaceTitle: currentView.namespaceTitle
+          } : {})}
+          {...(selectedKeys.length > 0 ? { selectedKeys } : {})}
+          onClose={() => setShowMigrateDialog(false)}
+          onSubmit={handleMigrate}
+        />
+      )}
     </div>
   )
 }

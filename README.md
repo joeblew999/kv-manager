@@ -1,11 +1,11 @@
 # Cloudflare KV Manager
 
-Last Updated January 6, 2026 - Production/Stable Version 2.1.0 
+Last Updated January 8, 2026 - Production/Stable Version 2.2.0 
 
 [![GitHub](https://img.shields.io/badge/GitHub-neverinfamous/kv--manager-blue?logo=github)](https://github.com/neverinfamous/kv-manager)
 [![Docker Pulls](https://img.shields.io/docker/pulls/writenotenow/kv-manager)](https://hub.docker.com/r/writenotenow/kv-manager)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](https://opensource.org/licenses/MIT)
-![Version](https://img.shields.io/badge/version-v2.1.0-green)
+![Version](https://img.shields.io/badge/version-v2.2.0-green)
 ![Status](https://img.shields.io/badge/status-Production%2FStable-brightgreen)
 [![Security](https://img.shields.io/badge/Security-Enhanced-green.svg)](https://github.com/neverinfamous/kv-manager/blob/main/SECURITY.md)
 [![CodeQL](https://img.shields.io/badge/CodeQL-Passing-brightgreen.svg)](https://github.com/neverinfamous/kv-manager/security/code-scanning)
@@ -29,10 +29,12 @@ A full-featured management platform for Cloudflare Workers KV, designed for engi
 - **🏷️ Tag Organization** - Unlimited tags stored in D1 for easy filtering and search
 - **🔍 Advanced Search** - Cross-namespace search by key name, tags, and custom metadata
 - **⚡ Bulk Operations** - Process thousands of keys efficiently (delete, copy, TTL, tags)
+- **🔄 NEW! Cross-Namespace Migration** - Migrate keys between namespaces with TTL preservation, metadata migration, and rollback support
 - **📥 Import/Export** - JSON/NDJSON support with collision handling
 - **☁️ R2 Backup & Restore** - Cloud-native backup with batch operations
 - **📈 Job History** - Complete audit trail with event timelines and advanced filtering
-- **📊 NEW! Metrics Dashboard** - View KV analytics, operation counts, and latency percentiles
+- **📊 Metrics Dashboard** - View KV analytics, operation counts, and latency percentiles
+- **🏥 NEW! Health Dashboard** - At-a-glance operational status with health score, job history, and backup coverage
 - **🔔 Webhooks** - Event-driven HTTP notifications for key operations, bulk jobs, and failures
 - **🔐 Enterprise Auth** - Cloudflare Access (Zero Trust) integration
 - **🎨 Modern UI** - Dark/light themes, responsive design, built with React + Tailwind CSS

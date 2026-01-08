@@ -316,8 +316,11 @@ export interface JobListResponse {
 }
 
 // KV Metrics types
-export interface KVOperationData {
+export type KVMetricsTimeRange = '24h' | '7d' | '30d'
+
+export interface KVOperationDataPoint {
   date: string
+  namespaceId?: string
   actionType: string
   requests: number
   latencyMsP50?: number
@@ -325,15 +328,48 @@ export interface KVOperationData {
   latencyMsP99?: number
 }
 
-export interface KVMetricsSummary {
-  namespaceId: string | null
-  startDate: string
-  endDate: string
+export interface KVStorageDataPoint {
+  date: string
+  namespaceId: string
+  keyCount: number
+  byteCount: number
+}
+
+export interface KVNamespaceMetricsSummary {
+  namespaceId: string
+  namespaceName?: string
   totalOperations: number
   operationsByType: Record<string, number>
-  avgLatencyMs: Record<string, { p50: number; p90: number; p99: number }>
-  dataPoints: KVOperationData[]
+  p50LatencyMs?: number
+  p90LatencyMs?: number
+  p99LatencyMs?: number
+  currentKeyCount?: number
+  currentByteCount?: number
 }
+
+export interface KVMetricsResponse {
+  summary: {
+    timeRange: KVMetricsTimeRange
+    startDate: string
+    endDate: string
+    totalOperations: number
+    operationsByType: Record<string, number>
+    avgLatencyMs?: {
+      p50: number
+      p90: number
+      p99: number
+    }
+    totalKeyCount?: number
+    totalByteCount?: number
+    namespaceCount: number
+  }
+  byNamespace: KVNamespaceMetricsSummary[]
+  operationsSeries: KVOperationDataPoint[]
+  storageSeries: KVStorageDataPoint[]
+}
+
+// Legacy alias for backward compatibility
+export type KVMetricsSummary = KVMetricsResponse
 
 class APIService {
   /**
@@ -1261,26 +1297,19 @@ class APIService {
    */
   async getMetrics(options: {
     namespaceId?: string
-    days?: number
-    startDate?: string
-    endDate?: string
+    range?: KVMetricsTimeRange
     skipCache?: boolean
-  } = {}): Promise<KVMetricsSummary> {
+  } = {}): Promise<KVMetricsResponse> {
     const params = new URLSearchParams()
-    if (options.days !== undefined) params.set('days', options.days.toString())
-    if (options.startDate) params.set('startDate', options.startDate)
-    if (options.endDate) params.set('endDate', options.endDate)
+    if (options.range) params.set('range', options.range)
+    if (options.namespaceId) params.set('namespaceId', options.namespaceId)
     if (options.skipCache) params.set('skipCache', 'true')
 
-    const endpoint = options.namespaceId
-      ? `${WORKER_API}/api/metrics/${options.namespaceId}`
-      : `${WORKER_API}/api/metrics`
-
-    const cacheKey = `metrics:${options.namespaceId ?? 'all'}:${params.toString()}`
+    const cacheKey = `metrics:${options.namespaceId ?? 'all'}:${options.range ?? '7d'}`
 
     // Check cache first unless skipCache is true
     if (!options.skipCache) {
-      const cached = getFromCache<KVMetricsSummary>(cacheKey, CACHE_TTL.METRICS)
+      const cached = getFromCache<KVMetricsResponse>(cacheKey, CACHE_TTL.METRICS)
       if (cached) {
         return cached
       }
@@ -1288,18 +1317,19 @@ class APIService {
 
     return deduplicateRequest(cacheKey, async () => {
       const response = await fetchWithBackoff(
-        `${endpoint}?${params.toString()}`,
+        `${WORKER_API}/api/metrics?${params.toString()}`,
         this.getFetchOptions()
       )
 
       await this.handleResponse(response)
 
       const data = await response.json()
+      const result = data.result as KVMetricsResponse
 
       // Store in cache
-      setInCache(cacheKey, data)
+      setInCache(cacheKey, result)
 
-      return data
+      return result
     })
   }
 }

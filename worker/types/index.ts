@@ -191,6 +191,35 @@ export interface R2BackupListItem {
   uploaded: string
 }
 
+// Bulk Migration Types
+export interface BulkMigrateParams {
+  sourceNamespaceId: string
+  targetNamespaceId: string
+  keys: string[]
+  cutoverMode: 'copy' | 'copy_delete'
+  migrateMetadata: boolean
+  preserveTTL: boolean
+  createBackup: boolean
+  backupPath?: string  // R2 backup path for rollback reference
+  userEmail: string
+}
+
+export interface MigrationVerificationResult {
+  passed: boolean
+  sourceKeyCount: number
+  targetKeyCount: number
+}
+
+export interface MigrationResult {
+  success: boolean
+  keysMigrated: number
+  metadataMigrated: number
+  errors: number
+  verification?: MigrationVerificationResult
+  backupPath?: string
+  warnings: string[]
+}
+
 // API Response Wrapper
 export interface APIResponse<T = unknown> {
   success: boolean
@@ -277,6 +306,97 @@ export interface StructuredError {
 
 // CORS Types
 export type CorsHeaders = HeadersInit
+
+// ============================================================================
+// KV METRICS TYPES
+// ============================================================================
+
+// Time range options for metrics queries
+export type KVMetricsTimeRange = '24h' | '7d' | '30d'
+
+// Operation data point from kvOperationsAdaptiveGroups
+export interface KVOperationDataPoint {
+  date: string
+  namespaceId?: string | undefined
+  actionType: string
+  requests: number
+  latencyMsP50?: number | undefined
+  latencyMsP90?: number | undefined
+  latencyMsP99?: number | undefined
+}
+
+// Storage data point from kvStorageAdaptiveGroups
+export interface KVStorageDataPoint {
+  date: string
+  namespaceId: string
+  keyCount: number
+  byteCount: number
+}
+
+// Per-namespace metrics summary
+export interface KVNamespaceMetricsSummary {
+  namespaceId: string
+  namespaceName?: string | undefined
+  totalOperations: number
+  operationsByType: Record<string, number>
+  p50LatencyMs?: number | undefined
+  p90LatencyMs?: number | undefined
+  p99LatencyMs?: number | undefined
+  currentKeyCount?: number | undefined
+  currentByteCount?: number | undefined
+}
+
+// Full metrics response
+export interface KVMetricsResponse {
+  summary: {
+    timeRange: KVMetricsTimeRange
+    startDate: string
+    endDate: string
+    totalOperations: number
+    operationsByType: Record<string, number>
+    avgLatencyMs?: {
+      p50: number
+      p90: number
+      p99: number
+    } | undefined
+    totalKeyCount?: number | undefined
+    totalByteCount?: number | undefined
+    namespaceCount: number
+  }
+  byNamespace: KVNamespaceMetricsSummary[]
+  operationsSeries: KVOperationDataPoint[]
+  storageSeries: KVStorageDataPoint[]
+}
+
+// GraphQL response types for KV analytics
+export interface KVOperationsGraphQLGroup {
+  sum?: { requests?: number }
+  dimensions?: { date?: string; actionType?: string; namespaceId?: string }
+  quantiles?: {
+    latencyMsP50?: number
+    latencyMsP90?: number
+    latencyMsP99?: number
+  }
+}
+
+export interface KVStorageGraphQLGroup {
+  max?: { keyCount?: number; byteCount?: number }
+  dimensions?: { date?: string; namespaceId?: string }
+}
+
+export interface KVAnalyticsResult {
+  viewer: {
+    accounts: {
+      kvOperationsAdaptiveGroups?: KVOperationsGraphQLGroup[]
+      kvStorageAdaptiveGroups?: KVStorageGraphQLGroup[]
+    }[]
+  }
+}
+
+export interface GraphQLAnalyticsResponse<T> {
+  data?: T
+  errors?: { message: string }[]
+}
 
 // Migration Types (for API responses)
 export interface MigrationStatusResponse {
