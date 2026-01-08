@@ -926,7 +926,7 @@ export default function App(): React.JSX.Element {
     createBackup: boolean;
   }): Promise<void> => {
     try {
-      setError('')
+      setError('');
 
       // Determine if migrating selected keys or entire namespace
       const result = params.keys && params.keys.length > 0
