@@ -58,43 +58,66 @@ docker run -d \
 
 ## 💻 Local Development
 
-**Prerequisites:** Node.js 18+, Wrangler CLI
+**Prerequisites:** Node.js 20+, Wrangler CLI
+
+Install dependencies:
 
 ```bash
-# Install dependencies
 npm install
-
-# Initialize D1 database
-npx wrangler d1 execute kv-manager-metadata-dev --local --file=worker/schema.sql
-
-# Start dev servers (2 terminals)
-npm run dev  # Terminal 1: Frontend (http://localhost:5173)
-npx wrangler dev --config wrangler.dev.toml --local  # Terminal 2: Worker (http://localhost:8787)
 ```
 
-**Note:** Auth bypassed for localhost. Mock data provided without credentials.
+Initialize D1 database:
 
-**[Complete Setup Guide →](https://github.com/neverinfamous/kv-manager/wiki/Installation)**
+```bash
+npx wrangler d1 execute kv-manager-metadata-dev --local --file=worker/schema.sql
+```
+
+Start dev servers (2 terminals):
+
+**Terminal 1** — Frontend:
+
+```bash
+npm run dev
+```
+
+**Terminal 2** — Worker:
+
+```bash
+npx wrangler dev --config wrangler.dev.toml --local
+```
 
 ## 🚀 Production Deployment
 
+Create D1 database:
+
 ```bash
-# Create D1 database
 wrangler d1 create kv-manager-metadata
+```
 
-# Initialize schema (new installation)
+Initialize schema (new installation):
+
+```bash
 wrangler d1 execute kv-manager-metadata --remote --file=worker/schema.sql
+```
 
-# Or migrate (existing installation)
+Or migrate (existing installation):
+
+```bash
 wrangler d1 execute kv-manager-metadata --remote --file=worker/migrations/apply_all_migrations.sql
+```
 
-# Set secrets
+Set secrets:
+
+```bash
 wrangler secret put ACCOUNT_ID
 wrangler secret put API_KEY
 wrangler secret put TEAM_DOMAIN
 wrangler secret put POLICY_AUD
+```
 
-# Build and deploy
+Build and deploy:
+
+```bash
 npm run build
 wrangler deploy
 ```
@@ -155,7 +178,7 @@ Modern, responsive design with dark/light theme support. Navigate between:
 ## 🆘 Troubleshooting
 
 **Common issues:**
-- **Worker not starting** - Ensure Wrangler is installed, Node 18+
+- **Worker not starting** - Ensure Wrangler is installed, Node 20+
 - **Frontend connection issues** - Verify `VITE_WORKER_API` in `.env`
 - **D1 errors** - Reinitialize with `worker/schema.sql`
 - **Search not working** - Keys need D1 metadata (auto-indexed when created via UI)

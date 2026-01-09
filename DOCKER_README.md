@@ -111,7 +111,7 @@ curl http://localhost:8787/health
 **Pull and restart:**
 ```bash
 docker pull writenotenow/kv-manager:latest
-docker-compose up -d  # or docker stop/rm/run
+docker compose up -d  # or docker stop/rm/run
 ```
 
 **Pin version (recommended for production):**
