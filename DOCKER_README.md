@@ -24,6 +24,7 @@ A full-featured management platform for Cloudflare Workers KV, designed for engi
 ## ✨ Key Features
 
 - **🗂️ Namespace & Key Management** - Full CRUD operations with cursor-based pagination and Grid/List view toggle
+- **🎨 Color Tags** - 27-color palette for visual namespace organization
 - **📊 Dual Metadata System** - KV Native (1024 bytes) + D1 Custom (unlimited) metadata
 - **🏷️ Tag Organization** - Unlimited tags stored in D1 for easy filtering and search
 - **🔍 Advanced Search** - Cross-namespace search by key name, tags, and custom metadata
