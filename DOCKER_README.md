@@ -124,7 +124,7 @@ services:
 
 ## 📦 Image Details
 
-- **Base:** Node.js 22-alpine
+- **Base:** Node.js 24-alpine (LTS)
 - **Size:** ~150MB
 - **Architectures:** linux/amd64, linux/arm64
 - **User:** Non-root

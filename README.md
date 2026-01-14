@@ -58,7 +58,7 @@ docker run -d \
 
 ## 💻 Local Development
 
-**Prerequisites:** Node.js 20+, Wrangler CLI
+**Prerequisites:** Node.js 24+ (LTS), Wrangler CLI
 
 Install dependencies:
 
@@ -178,7 +178,7 @@ Modern, responsive design with dark/light theme support. Navigate between:
 ## 🆘 Troubleshooting
 
 **Common issues:**
-- **Worker not starting** - Ensure Wrangler is installed, Node 20+
+- **Worker not starting** - Ensure Wrangler is installed, Node 24+
 - **Frontend connection issues** - Verify `VITE_WORKER_API` in `.env`
 - **D1 errors** - Reinitialize with `worker/schema.sql`
 - **Search not working** - Keys need D1 metadata (auto-indexed when created via UI)
