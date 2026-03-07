@@ -5,7 +5,7 @@
 [![GitHub](https://img.shields.io/badge/GitHub-neverinfamous/kv--manager-blue?logo=github)](https://github.com/neverinfamous/kv-manager)
 [![Docker Pulls](https://img.shields.io/docker/pulls/writenotenow/kv-manager)](https://hub.docker.com/r/writenotenow/kv-manager)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](https://opensource.org/licenses/MIT)
-![Version](https://img.shields.io/badge/version-v2.2.2-green)
+![Version](https://img.shields.io/badge/version-v2.2.3-green)
 ![Status](https://img.shields.io/badge/status-Production%2FStable-brightgreen)
 [![Security](https://img.shields.io/badge/Security-Enhanced-green.svg)](https://github.com/neverinfamous/kv-manager/blob/main/SECURITY.md)
 [![CodeQL](https://img.shields.io/badge/CodeQL-Passing-brightgreen.svg)](https://github.com/neverinfamous/kv-manager/security/code-scanning)
@@ -13,7 +13,7 @@
 
 A full-featured management platform for Cloudflare Workers KV, designed for engineering teams and large-scale workloads. Browse namespaces, run bulk operations, search across your entire KV footprint, manage metadata and tags, automate backups to R2, and secure everything with Cloudflare Access Zero Trust.
 
-**[Live Demo](https://kv.adamic.tech/)** • **[Wiki](https://github.com/neverinfamous/kv-manager/wiki)** • **[Changelog](https://github.com/neverinfamous/kv-manager/wiki/Changelog)** • **[Release Article](https://adamic.tech/articles/kv-manager)**
+**[Live Demo](https://kv.adamic.tech/)** • **[Wiki](https://github.com/neverinfamous/kv-manager/wiki)** • **[Changelog](https://github.com/neverinfamous/kv-manager/blob/main/CHANGELOG.md)** • **[Release Article](https://adamic.tech/articles/kv-manager)**
 
 ## Tech Stack
 
