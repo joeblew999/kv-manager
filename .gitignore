@@ -34,3 +34,15 @@ dist-ssr
 
 # D1 local database
 .mf/
+
+# Generated from wrangler.toml.template via `mise run wrangler:gen`.
+# Do not edit. Real config lives in wrangler.toml.template + config/<env>.env.
+/wrangler.toml
+
+# Per-operator config — keep real values out of git. Schema in config/template.env.
+config/*.env
+!config/template.env
+
+# fnox local state (if any). Secrets live in fnox keychain; don't commit.
+.fnox/
+build/
