@@ -1,3 +1,8 @@
+> **Mise retirement:** the setup, task tables and deployment examples below describe
+> the retired fork automation and are historical, not runnable instructions.
+> Use [MISE-RETIREMENT.md](MISE-RETIREMENT.md), `mise.toml` and the upstream README
+> for the current task set and manual setup. Do not recreate shared imports.
+
 # Notes for Claude — joeblew999/kv-manager
 
 This is **joeblew999's fork** of [dreamcatcher-tv/kv-manager](https://github.com/dreamcatcher-tv/kv-manager) (or whichever upstream the fork tracks — see `git remote -v`).

@@ -1,46 +1,4 @@
-[settings]
-# extends task-inheritance is mise experimental — joeblew999/.github
-# v0.18+ uses it for per-namespace tools dedup (cf:_base, bw:_base, etc).
-experimental = true
-
-# kv-manager fork — operator deploy tooling.
-#
-# Layered on top of upstream kv-manager. Heavy lifting lives in the shared
-# joeblew999/.github/mise-tasks library imported below. This file only adds:
-#   - tools pin
-#   - env vars
-#   - phased deploy orchestrators (1-install, 6-build, 10-deploy)
-#   - prove:all wiring (the four prove:* checks come from shared)
-#
-# Deploy lifecycle (one time):
-#   1. cp config/template.env config/production.env  # fill CF_SUBDOMAIN, OPERATOR_EMAIL
-#   2. fnox set --global -p keychain CLOUDFLARE_API_TOKEN  # one-time per machine
-#      fnox set --global -p keychain CLOUDFLARE_ACCOUNT_ID
-#   3. mise run cf:provision-d1-r2     # creates R2 + D1, writes IDs back
-#   4. mise run cf:access-setup        # creates Access App + policy, writes fnox values
-#   5. mise run cf:secrets-put-mapped  # 4 fnox -> Worker secrets
-#   6. mise run 10-deploy
-#   7. mise run prove:all
-
-[task_config]
-# Migrated to v0.17.3 TOML-task includes. Per-task tools propagate;
-# consumer no longer pins gh+jq+envsubst just because shared tasks
-# use them. envsubst dropped — wrangler:gen is now pure nu.
-#
-# Browseable (clicking the `git::` URL will 404):
-#   https://github.com/joeblew999/.github/blob/v0.19.1/tasks/cf.toml
-#   https://github.com/joeblew999/.github/blob/v0.19.1/tasks/env.toml
-#   https://github.com/joeblew999/.github/blob/v0.19.1/tasks/prove.toml
-#   https://github.com/joeblew999/.github/blob/v0.19.1/tasks/secrets.toml
-#   https://github.com/joeblew999/.github/blob/v0.19.1/tasks/wrangler.toml
-includes = [
-  "git::https://github.com/joeblew999/.github.git//tasks/ci.toml?ref=v0.33.0",
-  "git::https://github.com/joeblew999/.github.git//tasks/cf.toml?ref=v0.33.0",
-  "git::https://github.com/joeblew999/.github.git//tasks/env.toml?ref=v0.33.0",
-  "git::https://github.com/joeblew999/.github.git//tasks/prove.toml?ref=v0.33.0",
-  "git::https://github.com/joeblew999/.github.git//tasks/secrets.toml?ref=v0.33.0",
-  "git::https://github.com/joeblew999/.github.git//tasks/wrangler.toml?ref=v0.33.0",
-]
+# Repository-local tooling. Shared workflows are retired; see MISE-RETIREMENT.md.
 
 [tools]
 node                     = "24"
@@ -48,21 +6,12 @@ node                     = "24"
 "github:jdx/fnox"        = "1.24"
 "github:nushell/nushell" = "0.112"
 "cargo:usage-cli"        = "3"
-# Shared-lib tasks bring their own gh + jq via per-task `tools = { ... }`.
 
 [env]
 DEFAULT_ENV    = "production"
 FNOX_SYNC_KEYS = ""
 
-# ── Per-fork inline tasks (everything else comes from shared) ────────────────
-
-[tasks."env:dump"]
-description = "Print all keys + values from config/<env>.env (default: production)."
-run = '''
-file=$(mise run -q env:resolve)
-echo "# $file"
-cat "$file"
-'''
+# Repository-local tasks.
 
 [tasks."env:list"]
 description = "List every env config (config/<name>.env)."
@@ -72,58 +21,6 @@ run         = "ls -1 config/*.env 2>/dev/null | grep -v template.env || echo 'no
 description = "Install npm deps (first time)."
 run         = "npm install"
 
-[tasks."6-build"]
-description = "Build the Vite SPA (dist/) — required before deploy."
-depends     = ["1-install", "wrangler:gen"]
-run         = "npm run build"
-
-[tasks."10-deploy"]
-description = "Build + deploy the Worker. Validates CF token first."
-depends     = ["6-build", "cf:token-check"]
-run = '''
-set -e
-unset FNOX_AGE_KEY
-export CLOUDFLARE_API_TOKEN="${CLOUDFLARE_API_TOKEN:-$(fnox get CLOUDFLARE_API_TOKEN 2>/dev/null || true)}"
-wrangler deploy
-'''
-
-[tasks."10b-redeploy"]
-description = "Re-deploy without rebuilding (fast iteration after wrangler.toml/secret changes)."
-depends     = ["wrangler:gen"]
-run         = "wrangler deploy"
-
-[tasks."secrets:cf:list"]
-description = "List secrets currently set on the deployed Worker (values hidden)."
-depends     = ["wrangler:gen"]
-run         = "wrangler secret list"
-
-[tasks.dev]
-description = "Run kv-manager locally (Vite + wrangler dev)."
-depends     = ["wrangler:gen"]
-run         = "npm run dev"
-
-[tasks.tail]
-description = "Tail live worker logs."
-depends     = ["wrangler:gen"]
-run         = "wrangler tail"
-
 [tasks.whoami]
 description = "Show current Cloudflare auth identity."
 run         = "wrangler whoami"
-
-[tasks."prove:all"]
-description = "Run every prove:* check in order. Fails fast on first miss."
-depends     = ["prove:deployed", "prove:access-policy", "prove:bindings", "prove:secrets"]
-run         = "echo '✓ all checks passed.'"
-
-# ── check ────────────────────────────────────────────────────────────────────
-# Local lint canary — run before every push.
-#   ci:parse-check           parse-checks any nu files in mise-tasks/
-#   ci:check-toml-tasks      parse-checks inline run bodies in tasks/*.toml
-#   ci:check-workflow-nu     parse-checks embedded nu blocks in .github/workflows/*.yml
-# All three are no-ops in repos lacking those files. Adds <2s
-# overhead, catches nu syntax errors locally instead of in CI.
-[tasks.check]
-description = "Local lint: parse-check every nu file + TOML-task body + workflow nu block"
-depends = ["ci:parse-check", "ci:check-toml-tasks", "ci:check-workflow-nu"]
-run = "echo \"✓ check passed\""

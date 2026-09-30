@@ -211,3 +211,8 @@ If you find KV Manager useful, please consider giving it a star on GitHub!
 ---
 
 **Made with ❤️ for the Cloudflare community**
+
+## Mise workflow retirement
+
+The former shared mise automation is retired. See [MISE-RETIREMENT.md](MISE-RETIREMENT.md)
+for removed commands and CI workflows; `mise.toml` contains the remaining local tasks.
